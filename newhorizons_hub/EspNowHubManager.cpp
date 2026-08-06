@@ -20,9 +20,30 @@ constexpr size_t kDeviceUidOffset = 4;
 // EspNowFrame.h's fragment header layout: magic(1) + version(1) +
 // frameType(1) + ... -- see EspNowFragHeaderLen's own comment there.
 constexpr size_t kEspNowFragTypeOffset = 2;
+
+// PHY rate for each paired device's ESP-NOW link. Mirrors
+// EspNowPairing.cpp's own kEspNowPeerPhyMode/kEspNowPeerPhyRate on the
+// device side -- see that file's comment for the real-hardware validation
+// this value is based on (firmware/spikes/README.md in the NewHorizonsOS-OTA
+// repo, "PHY rate" section, 2026-08-06). The data-carrying direction is
+// device->Hub, so this side mainly governs the Hub's own POLL/PAIRED
+// control traffic back to the device -- kept symmetric anyway since it's a
+// cheap, non-fatal call.
+constexpr wifi_phy_mode_t kEspNowPeerPhyMode = WIFI_PHY_MODE_HT20;
+constexpr wifi_phy_rate_t kEspNowPeerPhyRate = WIFI_PHY_RATE_MCS3_LGI;
 }  // namespace
 
 bool EspNowHubManager::begin() {
+  // Defensive: HT rates need 802.11n enabled on this interface. STA mode's
+  // default protocol bitmask is expected to already include it, but set it
+  // explicitly rather than have the per-peer rate-config call below fail
+  // for an unobvious reason.
+  const esp_err_t protoErr = esp_wifi_set_protocol(
+      WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+  if (protoErr != ESP_OK) {
+    Serial.printf("[hub] esp_wifi_set_protocol -> %d\n", protoErr);
+  }
+
   if (esp_now_init() != ESP_OK) {
     return false;
   }
@@ -71,6 +92,18 @@ void EspNowHubManager::registerPeerIfNeeded(DeviceSlot& slot) {
       return;
     }
     slot.registered = true;
+
+    esp_now_rate_config_t rateConfig = {};
+    rateConfig.phymode = kEspNowPeerPhyMode;
+    rateConfig.rate = kEspNowPeerPhyRate;
+    rateConfig.ersu = false;
+    rateConfig.dcm = false;
+    const esp_err_t rateErr = esp_now_set_peer_rate_config(slot.mac, &rateConfig);
+    if (rateErr != ESP_OK) {
+      // Non-fatal by design -- falls back to the default ESP-NOW rate
+      // rather than blocking this device's pairing.
+      Serial.printf("[hub] esp_now_set_peer_rate_config -> %d, using default rate\n", rateErr);
+    }
   }
   const uint8_t payload[1] = {kHubPairedMagic};
   esp_now_send(slot.mac, payload, sizeof(payload));
