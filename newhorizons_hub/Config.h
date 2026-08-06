@@ -17,7 +17,7 @@ static constexpr char kProtocolName[] = "NHO/Arduino/1";
 // device firmware's own Config.h even though both started as the same
 // file (see this repo's README for the manual-sync convention).
 static constexpr char kHardwareModel[] = NHOS_BOARD_NAME " (Hub)";
-static constexpr char kFirmwareVersion[] = "v0.2.0";
+static constexpr char kFirmwareVersion[] = "v0.1.1";
 
 static constexpr uint16_t kRows = NHOS_BOARD_ROWS;
 static constexpr uint16_t kCols = NHOS_BOARD_COLS;
