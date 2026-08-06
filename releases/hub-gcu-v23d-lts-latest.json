@@ -1,0 +1,11 @@
+{
+  "firmware": {
+    "sha256": "d24b00fd3b6579b8f1c3d88d8d8156e2e9a193a381f43319653c6a9f966781ba",
+    "size": 1284848,
+    "url": "https://raw.githubusercontent.com/wenzi7777/New-Horizons-Hub/main/releases/artifacts/newhorizons-hub-gcu-v23d-lts-v0.1.0.bin"
+  },
+  "latest": "v0.1.0",
+  "model": "VD-CTL/R v2.3.D GCU LTS (Hub)",
+  "product": "New Horizons OS Arduino",
+  "protocol": "NHO/Arduino/1"
+}

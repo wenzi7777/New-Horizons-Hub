@@ -1,0 +1,11 @@
+.DS_Store
+.serena/
+.idea/
+
+build/
+*.elf
+*.map
+*.bin
+!releases/*.json
+!releases/artifacts/
+!releases/artifacts/*.bin

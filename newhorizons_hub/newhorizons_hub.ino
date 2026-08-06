@@ -1,0 +1,364 @@
+// New Horizons Hub -- see README.md and
+// ~/.claude/plans/linked-strolling-puppy.md for design context.
+//
+// This Hub runs a WebServer ONLY inside HubConfigPortal's offline SoftAP
+// setup form -- once that form is saved and the Hub connects, no
+// WebServer runs for the rest of normal operation (the previous always-on
+// DirectWebUI management page was removed: a no-PSRAM board doesn't need
+// to run a second full WebServer/route table alongside HubUplinkClient's
+// WS/TLS connection just to duplicate what that connection can already
+// carry). All ongoing Hub management (status, settings changes, paired
+// devices, LAN scan/migrate, factory reset) is driven remotely from the
+// Desktop app's Manage Hub panel via `gateway_command`/`gateway_command_result`
+// messages over the same WS connection -- see HubUplinkClient::onGatewayCommand()
+// and handleGatewayCommand() below.
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+
+#include "EspNowCommandDispatcher.h"
+#include "EspNowHubManager.h"
+#include "HubConfig.h"
+#include "HubConfigPortal.h"
+#include "HubUplinkClient.h"
+#include "JsonUtils.h"
+#include "LedController.h"
+#include "OtaManager.h"
+#include "Storage.h"
+#include "WifiManager.h"
+
+namespace {
+
+// This repo's own release manifest -- deliberately NOT Config.h's
+// kDefaultUpdateManifestUrl (that one is a leftover default meant for
+// device firmware, points at a different repo entirely). See Config.h's
+// kHardwareModel comment for how OtaManager::parseManifest()'s
+// model_mismatch check guards against ever applying the wrong one even if
+// this URL is misconfigured.
+constexpr char kHubUpdateManifestUrl[] =
+    "https://raw.githubusercontent.com/wenzi7777/New-Horizons-Hub/main/releases/hub-gcu-v23d-lts-latest.json";
+
+nhos::Storage storage;
+nhos::WifiManager wifi;
+nhos::LedController leds;
+nhos::HubConfig hubConfig;
+nhos::HubConfigPortal configPortal;
+nhos::EspNowHubManager hubManager;
+nhos::HubUplinkClient uplink;
+nhos::EspNowCommandDispatcher commandDispatcher;
+nhos::OtaManager ota;
+
+// 30s mirrors the removed DirectWebUI::pairedDevicesHtml()'s own staleness
+// filter (kPairedStaleMs) -- generous relative to a device's background
+// HELLO retry interval so a briefly-quiet device doesn't flicker in/out of
+// the Desktop UI's paired-devices list.
+constexpr uint32_t kPairedStaleMs = 30000;
+
+bool portalMode = false;
+bool uplinkStarted = false;
+
+void onEspNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+  hubManager.handleEspNowRecv(info->src_addr, data, static_cast<size_t>(len));
+}
+
+uint32_t framesForwarded = 0;
+uint32_t lastFrameLogMs = 0;
+
+void onHubFrameReady(uint8_t /*deviceIndex*/, const uint8_t* /*mac*/,
+                      const uint8_t* data, size_t len, void* /*userData*/) {
+  uplink.sendSensorPacket(data, len);
+  ++framesForwarded;
+  const uint32_t now = millis();
+  if (now - lastFrameLogMs >= 2000) {
+    lastFrameLogMs = now;
+    Serial.printf("[hub] forwarded_frames=%lu last_len=%u uplink_connected=%d\n",
+                  static_cast<unsigned long>(framesForwarded),
+                  static_cast<unsigned>(len), uplink.isConnected() ? 1 : 0);
+  }
+}
+
+// Step 4 reverse command channel: device command responses arrive here
+// (kEspNowFragTypeControl frames, kept separate from onHubFrameReady's
+// sensor-data path -- see EspNowHubManager.h's onControlFrameReady()).
+void onHubControlFrameReady(uint8_t deviceIndex, const uint8_t* mac, const uint8_t* data,
+                             size_t len, void* /*userData*/) {
+  commandDispatcher.handleControlResponse(deviceIndex, mac, data, len);
+}
+
+// Backend -> Hub command, forwarded from HubUplinkClient's WS text-frame
+// parsing to the dispatcher for ESP-NOW delivery + retry.
+void onUplinkCommand(const String& deviceUid, const String& payloadJson, void* /*userData*/) {
+  commandDispatcher.sendCommand(deviceUid, payloadJson);
+}
+
+// Clears every NVS key HubConfigPortal::handleFactoryReset() also clears --
+// duplicated (not shared via a helper) because the two live in separate
+// translation units and this is the entire body; see HubConfigPortal.cpp
+// for the SoftAP-reachable equivalent used when the Hub can't reach the
+// Backend at all.
+void performFactoryReset() {
+  storage.putString("wifi_ssid", "");
+  storage.putString("wifi_pass", "");
+  storage.putString("hub_gateway_id", "");
+  storage.putString("hub_target_mode", "");
+  storage.putString("hub_manual_url", "");
+  storage.putString("hub_auth_token", "");
+}
+
+// Backend -> Hub-itself command (the WS session identifies which Hub, so
+// no device_uid), forwarded from HubUplinkClient's `gateway_command`
+// parsing. Only `set_config`/`factory_reset` need to reach this far --
+// status/paired-devices display data rides the gateway_status heartbeat
+// instead (see buildPairedDevicesDetailJson()), and LAN
+// scan/migrate/cancel are served by the Backend directly or via the
+// existing per-device command path (see plan section "移除 Hub 常駐
+// WebUI...").
+void handleGatewayCommand(const String& requestId, const String& payloadJson, void* /*userData*/) {
+  String command;
+  nhos::jsonExtractString(payloadJson, "command", command);
+
+  if (command == "set_config") {
+    String gatewayId;
+    String targetMode;
+    String manualUrl;
+    String authToken;
+    nhos::jsonExtractString(payloadJson, "gateway_id", gatewayId);
+    nhos::jsonExtractString(payloadJson, "target_mode", targetMode);
+    nhos::jsonExtractString(payloadJson, "manual_url", manualUrl);
+    nhos::jsonExtractString(payloadJson, "auth_token", authToken);
+    if (gatewayId.isEmpty()) gatewayId = hubConfig.data().gatewayId;
+    if (!hubConfig.apply(storage, gatewayId, targetMode, manualUrl, authToken)) {
+      uplink.sendGatewayCommandResult(requestId, false, "invalid_config");
+      return;
+    }
+    uplink.sendGatewayCommandResult(requestId, true, "Applied, rebooting");
+    delay(200);
+    ESP.restart();
+    return;
+  }
+
+  if (command == "factory_reset") {
+    performFactoryReset();
+    uplink.sendGatewayCommandResult(requestId, true, "Factory reset done, rebooting");
+    delay(200);
+    ESP.restart();
+    return;
+  }
+
+  uplink.sendGatewayCommandResult(requestId, false, "unknown_command");
+}
+
+// Backend registers a device_uid -> gateway routing entry only from a
+// gateway_status message's state.devices list (see
+// HubUplinkClient::sendGatewayStatus()'s header comment) -- this builds
+// that list from the Hub's live ESP-NOW roster every time it's sent.
+String buildPairedDevicesJson() {
+  String out = "[";
+  bool any = false;
+  for (uint8_t i = 0; i < nhos::EspNowHubManager::maxDevices(); ++i) {
+    const nhos::EspNowHubManager::PairedDeviceInfo info = hubManager.slotInfo(i);
+    if (!info.used || !info.registered || !info.deviceUidKnown) continue;
+    char uidBuf[13];
+    snprintf(uidBuf, sizeof(uidBuf), "%02X%02X%02X%02X%02X%02X", info.deviceUid[0],
+             info.deviceUid[1], info.deviceUid[2], info.deviceUid[3], info.deviceUid[4],
+             info.deviceUid[5]);
+    if (any) out += ",";
+    any = true;
+    bool first = true;
+    out += "{";
+    nhos::jsonStringField(out, "device_uid", String(uidBuf), first);
+    nhos::jsonBoolField(out, "connected", true, first);
+    out += "}";
+  }
+  out += "]";
+  return out;
+}
+
+// Richer display list for the Desktop UI's Manage Hub panel -- unlike
+// buildPairedDevicesJson()'s routing table above, this includes
+// not-yet-registered/UID-unknown slots too (status "pending"), and applies
+// the same 30s staleness filter the removed DirectWebUI::pairedDevicesHtml()
+// used, so a Hub that's forgotten its ESP-NOW peer (Hub reboot resets the
+// roster; devices re-register via background HELLO) doesn't show ghost
+// entries indefinitely.
+String buildPairedDevicesDetailJson() {
+  String out = "[";
+  bool any = false;
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < nhos::EspNowHubManager::maxDevices(); ++i) {
+    const nhos::EspNowHubManager::PairedDeviceInfo info = hubManager.slotInfo(i);
+    if (!info.used) continue;
+    if (now - info.lastSeenMs > kPairedStaleMs) continue;
+    if (any) out += ",";
+    any = true;
+    char macBuf[18];
+    snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X", info.mac[0], info.mac[1],
+             info.mac[2], info.mac[3], info.mac[4], info.mac[5]);
+    String uid;
+    if (info.deviceUidKnown) {
+      char uidBuf[13];
+      snprintf(uidBuf, sizeof(uidBuf), "%02X%02X%02X%02X%02X%02X", info.deviceUid[0],
+               info.deviceUid[1], info.deviceUid[2], info.deviceUid[3], info.deviceUid[4],
+               info.deviceUid[5]);
+      uid = uidBuf;
+    }
+    bool first = true;
+    out += "{";
+    nhos::jsonStringField(out, "device_uid", uid, first);
+    nhos::jsonStringField(out, "mac", String(macBuf), first);
+    nhos::jsonStringField(out, "status", info.registered ? "paired" : "pending", first);
+    out += "}";
+  }
+  out += "]";
+  return out;
+}
+
+void startUplinkIfReady() {
+  // hubConfig.isConfigured() should always be true by the time Wi-Fi comes
+  // up now (HubConfigPortal's single form writes Wi-Fi + Hub settings
+  // together, see HubConfigPortal::handleSave()) -- this guard just avoids
+  // registering against Production with an empty gateway_id in the
+  // never-should-happen case that NVS has Wi-Fi creds but no Hub config
+  // (e.g. a downgrade from an older firmware version).
+  if (uplinkStarted || !wifi.isConnected() || !hubConfig.isConfigured()) return;
+  const nhos::HubConfigData& cfg = hubConfig.data();
+  uplink.begin(cfg.targetMode, cfg.manualUrl, cfg.gatewayId, cfg.authToken);
+  uplinkStarted = true;
+}
+
+// Boot-time only, mirrors newhorizons_os.ino's serviceAutoOta() -- no
+// manual trigger from the Desktop UI for v1 (see the plan). Unlike the
+// device side there's no per-unit "autoApplyOnBoot" config flag to check first:
+// a Hub has no matrix/IMU workload to interrupt, so checking on every boot
+// is unconditional whenever WiFi is up and we're not sitting in the setup
+// portal.
+void serviceAutoOta() {
+  Serial.println(F("[hub] auto_ota_enabled"));
+  leds.setSignal(nhos::LedSignal::OtaActive);
+  leds.service(millis());
+  const bool applied = ota.autoApplyIfNewer(kHubUpdateManifestUrl);
+  if (!applied) {
+    if (ota.lastPhase() == "current") {
+      Serial.println(F("[hub] auto_ota_no_update"));
+      return;
+    }
+    Serial.print(F("[hub] auto_ota_apply_failed status="));
+    Serial.println(ota.lastStatusJson());
+    leds.showEvent(nhos::LedSignal::OtaError);
+    leds.service(millis());
+    return;
+  }
+  leds.showEvent(nhos::LedSignal::OtaSuccess);
+  leds.service(millis());
+  delay(100);
+  ESP.restart();
+}
+
+// Reflects current connectivity every loop() tick -- cheap to call
+// repeatedly (setSignal() is just an assignment), and simpler than trying
+// to thread LED updates through every call site that changes Wi-Fi/uplink
+// state.
+void updateRuntimeLed() {
+  if (!wifi.isConnected()) {
+    leds.setSignal(nhos::LedSignal::WifiConnecting);
+    return;
+  }
+  if (!uplinkStarted || !uplink.isConnected()) {
+    leds.setSignal(nhos::LedSignal::UplinkDegraded);
+    return;
+  }
+  leds.setSignal(nhos::LedSignal::Online);
+}
+
+}  // namespace
+
+void setup() {
+  Serial.begin(115200);
+  delay(300);
+
+  storage.begin();
+  leds.begin();
+  leds.setSignal(nhos::LedSignal::Boot);
+
+  hubConfig.load(storage);
+
+  // GCU V2.3.D has no physical setup button -- "no Wi-Fi credentials yet"
+  // is the only trigger for entering this portal; re-entry after first
+  // boot is via the portal's own Factory Reset link, or remotely via a
+  // `factory_reset` gateway_command while still online (see
+  // HubConfigPortal.h and handleGatewayCommand() below). The portal's
+  // single form collects Wi-Fi credentials AND Hub settings
+  // (gateway_id/target_mode/etc.) together, so this one check gates both.
+  //
+  // NOTE: can't use wifi.hasCredentials() here -- it reads through the
+  // WifiManager's storage_ member, which WifiManager::begin() hasn't set
+  // yet at this point (begin() is only called below, after this check
+  // decides whether to enter the portal at all). Query storage directly
+  // instead; this mirrors hasCredentials()'s own implementation exactly.
+  // (Found on real hardware: without this, the Hub always looped back
+  // into HubConfigPortal on every boot, even right after a successful
+  // portal save -- hasCredentials() was silently always returning false.)
+  if (storage.getString("wifi_ssid", "").isEmpty()) {
+    portalMode = true;
+    configPortal.begin(&storage, &hubConfig);
+    leds.setSignal(nhos::LedSignal::WifiSetup);
+    return;
+  }
+
+  const bool wifiConnected = wifi.begin(storage);
+  leds.setSignal(wifiConnected ? nhos::LedSignal::Online : nhos::LedSignal::WifiSetup);
+
+  ota.begin(storage);
+  if (wifiConnected) {
+    serviceAutoOta();  // may ESP.restart() and never return
+  }
+
+  if (!hubManager.begin()) {
+    Serial.println("[hub] esp_now_init FAILED");
+  }
+  esp_now_register_recv_cb(onEspNowRecv);
+  hubManager.onFrameReady(onHubFrameReady, nullptr);
+  hubManager.onControlFrameReady(onHubControlFrameReady, nullptr);
+  commandDispatcher.begin(&hubManager, &uplink);
+  uplink.onCommand(onUplinkCommand, nullptr);
+  uplink.onGatewayCommand(handleGatewayCommand, nullptr);
+
+  startUplinkIfReady();
+
+  // esp_wifi_get_mac() reads straight from eFuse -- this is the MAC
+  // devices need in DeviceConfig.transport.hubMac to pair with this Hub
+  // over ESP-NOW.
+  uint8_t mac[6] = {0};
+  esp_wifi_get_mac(WIFI_IF_STA, mac);
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2],
+           mac[3], mac[4], mac[5]);
+  Serial.printf("[hub] my_mac=%s\n", macStr);
+  uint8_t currentChannel = 0;
+  wifi_second_chan_t secondChannel = WIFI_SECOND_CHAN_NONE;
+  esp_wifi_get_channel(&currentChannel, &secondChannel);
+  Serial.printf("[hub] wifi_channel=%u\n", currentChannel);
+  Serial.printf("[hub] gateway_id=%s\n", hubConfig.data().gatewayId.c_str());
+
+  Serial.println("[hub] ready");
+}
+
+void loop() {
+  if (portalMode) {
+    configPortal.service();
+    leds.service(millis());
+    return;
+  }
+
+  wifi.service();
+  startUplinkIfReady();
+  hubManager.service();
+  commandDispatcher.service();
+  uplink.service();
+  uplink.sendGatewayStatus(hubManager.registeredCount(), buildPairedDevicesJson(),
+                            buildPairedDevicesDetailJson());
+  updateRuntimeLed();
+  leds.service(millis());
+}
