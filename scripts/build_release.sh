@@ -13,8 +13,15 @@ VERSION="${VERSION:-v0.1.0}"
 # rejects the manifest otherwise.
 MODEL="${MODEL:-VD-CTL/R v2.3.D GCU LTS (Hub)}"
 BASE_URL="${BASE_URL:-https://raw.githubusercontent.com/wenzi7777/New-Horizons-Hub/main/releases/artifacts}"
+# Requires releases/notes/${VERSION}.md to exist -- see releases/README.md.
+CHANGELOG_URL="${CHANGELOG_URL:-https://raw.githubusercontent.com/wenzi7777/New-Horizons-Hub/main/releases/notes/${VERSION}.md}"
 
 mkdir -p "${OUT_DIR}" "${BUILD_PATH}" "${RELEASE_DIR}" "${MANIFEST_DIR}"
+
+if [[ ! -f "${ROOT}/releases/notes/${VERSION}.md" ]]; then
+  echo "Missing releases/notes/${VERSION}.md -- write a release note before cutting a release." >&2
+  exit 1
+fi
 
 arduino-cli compile \
   --fqbn "${FQBN}" \
@@ -39,6 +46,7 @@ for manifest_out in "${MANIFEST_DIR}/hub-gcu-v23d-lts-${VERSION}.json" "${MANIFE
     --output "${manifest_out}" \
     --model "${MODEL}" \
     --version "${VERSION}" \
-    --base-url "${BASE_URL}"
+    --base-url "${BASE_URL}" \
+    --changelog-url "${CHANGELOG_URL}"
   echo "${manifest_out}"
 done
