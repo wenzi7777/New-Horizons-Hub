@@ -60,6 +60,16 @@ void EspNowHubManager::onControlFrameReady(HubFrameCallback callback, void* user
   controlFrameCallbackUserData_ = userData;
 }
 
+void EspNowHubManager::onHubRequestFrameReady(HubFrameCallback callback, void* userData) {
+  hubRequestFrameCallback_ = callback;
+  hubRequestFrameCallbackUserData_ = userData;
+}
+
+void EspNowHubManager::onOtaChunkAck(OtaAckCallback callback, void* userData) {
+  otaAckCallback_ = callback;
+  otaAckCallbackUserData_ = userData;
+}
+
 int EspNowHubManager::findOrCreateSlot(const uint8_t mac[6]) {
   for (uint8_t i = 0; i < kEspNowHubMaxDevices; ++i) {
     if (slots_[i].used && memcmp(slots_[i].mac, mac, 6) == 0) {
@@ -121,19 +131,45 @@ void EspNowHubManager::handleEspNowRecv(const uint8_t mac[6], const uint8_t* dat
     return;
   }
 
+  if (len == kOtaChunkAckLen && data[0] == kOtaChunkAckMagic) {
+    if (otaAckCallback_ != nullptr) {
+      const uint16_t chunkIndex = static_cast<uint16_t>(data[1]) | (static_cast<uint16_t>(data[2]) << 8);
+      otaAckCallback_(slot.mac, chunkIndex, otaAckCallbackUserData_);
+    }
+    return;
+  }
+
   // Peek the frame-type byte (header offset 2 -- see EspNowFrame.h's
   // header layout comment) to route to the right reassembler *before*
   // feeding it any fragment, since onFragment() itself decides based on
   // whichever reassembler instance it's called on. See DeviceSlot's
-  // controlReassembler comment for why this split exists.
-  const bool isControlFragment = len > kEspNowFragTypeOffset && data[kEspNowFragTypeOffset] == kEspNowFragTypeControl;
-  EspNowReassembler& reassembler = isControlFragment ? slot.controlReassembler : slot.reassembler;
+  // controlReassembler/hubRequestReassembler comments for why this split
+  // exists.
+  const uint8_t frameTypeByte = len > kEspNowFragTypeOffset ? data[kEspNowFragTypeOffset] : kEspNowFragTypeData;
+  const bool isControlFragment = frameTypeByte == kEspNowFragTypeControl;
+  const bool isHubRequestFragment = frameTypeByte == kEspNowFragTypeHubRequest;
+  EspNowReassembler& reassembler = isControlFragment   ? slot.controlReassembler
+                                    : isHubRequestFragment ? slot.hubRequestReassembler
+                                                            : slot.reassembler;
   if (isControlFragment) {
     Serial.printf("[hub] control_fragment_rx idx=%d len=%u\n", idx, static_cast<unsigned>(len));
   }
 
   ReassembledFrame frame;
   if (reassembler.onFragment(data, len, &frame)) {
+    if (frame.frameType == kEspNowFragTypeHubRequest) {
+      // Device-initiated ask (fetch_manifest/ota_relay_start) -- also has
+      // no NHO/Arduino/1 header, same as control responses.
+      if (frame.len <= sizeof(hubRequestFrameBuffer_)) {
+        memcpy(hubRequestFrameBuffer_, frame.data, frame.len);
+        hubRequestFrameBufferLen_ = frame.len;
+        hubRequestFrameReadyDeviceIdx_ = static_cast<uint8_t>(idx);
+        memcpy(hubRequestFrameReadyMac_, slot.mac, 6);
+        hubRequestFrameReady_ = true;
+      }
+      return;
+    }
+
     if (frame.frameType == kEspNowFragTypeControl) {
       Serial.printf("[hub] control_frame_reassembled idx=%d len=%u\n", idx,
                     static_cast<unsigned>(frame.len));
@@ -211,6 +247,13 @@ void EspNowHubManager::service() {
                            controlFrameBuffer_, controlFrameBufferLen_,
                            controlFrameCallbackUserData_);
     controlFrameReady_ = false;
+  }
+
+  if (hubRequestFrameReady_ && hubRequestFrameCallback_ != nullptr) {
+    hubRequestFrameCallback_(hubRequestFrameReadyDeviceIdx_, hubRequestFrameReadyMac_,
+                              hubRequestFrameBuffer_, hubRequestFrameBufferLen_,
+                              hubRequestFrameCallbackUserData_);
+    hubRequestFrameReady_ = false;
   }
 }
 

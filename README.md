@@ -155,9 +155,23 @@ In rough order of "try this first":
    and you need to force it, use the portal's own Factory Reset button
    once you're connected to its SoftAP -- this clears `wifi_ssid`/
    `wifi_pass` and the four `HubConfig` NVS fields, then reboots straight
-   back into setup. This is the only recovery path that needs zero Backend
-   reachability.
-4. **Last resort — full NVS wipe.**
+   back into setup. This needs zero Backend reachability, but only helps
+   if the Hub is already showing the portal (i.e. `wifi_ssid` really is
+   unset) -- if the stored Wi-Fi password is simply *wrong*, the Hub keeps
+   retrying that network and never reaches the portal on its own; use
+   option 4 in that case.
+4. **Wi-Fi credentials are wrong (or you just need setup access and can't
+   reach the Hub any other way) and there's no physical reset button** —
+   the current GCU V2.3.D board has none; a future board revision adds
+   one. Power the Hub off and back on 5 times in a row, each cycle within
+   about 5 seconds of the previous power-on (real hardware, not scripted
+   -- just flip the power quickly). This performs the exact same factory
+   reset as the portal's own button above, then boots into
+   `HubConfigPortal`. Tracked via a boot counter in NVS (survives real
+   power loss, unlike RTC memory) -- see `newhorizons_hub.ino`'s
+   `consumeQuickBootFactoryResetTrigger()`/`serviceQuickBootCounterClear()`.
+   Real-hardware validated 2026-08-07.
+5. **Last resort — full NVS wipe.**
    ```bash
    esptool.py --chip esp32s3 --port <port> erase_flash
    ```

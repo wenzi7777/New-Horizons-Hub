@@ -32,6 +32,21 @@ constexpr uint8_t kEspNowHubMaxDevices = 4;
 constexpr uint8_t kHubHelloMagic = 0xE1;   // device -> Hub: "I exist, register me"
 constexpr uint8_t kHubPairedMagic = 0xE3;  // Hub -> device: "registered"
 constexpr uint8_t kHubPollMagic = 0xE2;    // Hub -> device: "your turn now"
+// OTA chunk ack, device -> Hub: raw 3-byte packet {magic, chunkIndexLow,
+// chunkIndexHigh} -- not routed through the fragment/reassembler machinery
+// at all (mirrors kHubHelloMagic/kHubPollMagic's own single-packet
+// messages), since it needs to be recognized before the len==1 HELLO
+// check and the frame-type-byte-based reassembler routing below. Handled
+// by EspNowOtaRelay, not this class -- see handleEspNowRecv().
+constexpr uint8_t kOtaChunkAckMagic = 0xE6;
+constexpr size_t kOtaChunkAckLen = 3;
+
+// Small reassembler size for device-initiated hub-request traffic
+// (fetch_manifest/ota_relay_start JSON, kEspNowFragTypeHubRequest) --
+// deliberately much smaller than kEspNowMaxFragCount*kEspNowFragMaxPayload
+// (3840B, sized for OTA chunks/command responses), since these payloads
+// are just small JSON asks, not firmware chunks.
+constexpr size_t kHubRequestBufferBytes = 1024;
 
 // Fallback only -- NOT a designed-in per-device fps budget. See header
 // comment: achieved fps is an emergent, measured property of this design.
@@ -58,6 +73,19 @@ class EspNowHubManager {
   // frames so a command response is never mistaken for sensor data and
   // forwarded upstream as one.
   void onControlFrameReady(HubFrameCallback callback, void* userData);
+
+  // Device-initiated hub-request traffic (kEspNowFragTypeHubRequest --
+  // fetch_manifest/ota_relay_start JSON asks). Kept as its own
+  // callback/buffer/reassembler, not folded into onControlFrameReady,
+  // since kEspNowFragTypeControl's existing reassembler is sized and
+  // timed for Hub-initiated EspNowCommandDispatcher traffic -- see
+  // EspNowFrame.h's kEspNowFragTypeHubRequest comment.
+  void onHubRequestFrameReady(HubFrameCallback callback, void* userData);
+
+  // OTA chunk ack (device -> Hub, raw 3-byte packet, not a reassembled
+  // frame -- see kOtaChunkAckMagic). Wired to EspNowOtaRelay.
+  using OtaAckCallback = void (*)(const uint8_t mac[6], uint16_t chunkIndex, void* userData);
+  void onOtaChunkAck(OtaAckCallback callback, void* userData);
 
   // Call every loop() iteration: drives the poll-advance/timeout state
   // machine and dispatches any completed frame to the registered callback.
@@ -97,7 +125,8 @@ class EspNowHubManager {
   struct DeviceSlot {
     DeviceSlot()
         : reassembler(scratch, sizeof(scratch)),
-          controlReassembler(controlScratch, sizeof(controlScratch)) {}
+          controlReassembler(controlScratch, sizeof(controlScratch)),
+          hubRequestReassembler(hubRequestScratch, sizeof(hubRequestScratch)) {}
 
     bool used = false;
     bool registered = false;
@@ -114,6 +143,12 @@ class EspNowHubManager {
     // request to time out even though the device was actually responding.
     uint8_t controlScratch[kEspNowMaxFragCount * kEspNowFragMaxPayload];
     EspNowReassembler controlReassembler;
+    // Same reasoning again, third time: device-initiated hub-request
+    // traffic (fetch_manifest/ota_relay_start) gets its own reassembler
+    // so it can't interleave with either data or Hub-initiated control
+    // traffic. Deliberately smaller buffer -- see kHubRequestBufferBytes.
+    uint8_t hubRequestScratch[kHubRequestBufferBytes];
+    EspNowReassembler hubRequestReassembler;
     uint32_t lastSeenMs = 0;
     uint8_t deviceUid[6] = {0};
     bool deviceUidKnown = false;
@@ -133,6 +168,10 @@ class EspNowHubManager {
   void* frameCallbackUserData_ = nullptr;
   HubFrameCallback controlFrameCallback_ = nullptr;
   void* controlFrameCallbackUserData_ = nullptr;
+  HubFrameCallback hubRequestFrameCallback_ = nullptr;
+  void* hubRequestFrameCallbackUserData_ = nullptr;
+  OtaAckCallback otaAckCallback_ = nullptr;
+  void* otaAckCallbackUserData_ = nullptr;
 
   // A completed frame is buffered here (copied out of the reassembler's
   // scratch buffer, which is only valid until that device's next
@@ -159,6 +198,13 @@ class EspNowHubManager {
   uint8_t controlFrameReadyMac_[6] = {0};
   uint8_t controlFrameBuffer_[kEspNowMaxFragCount * kEspNowFragMaxPayload];
   size_t controlFrameBufferLen_ = 0;
+
+  // Same buffering scheme again, for device-initiated hub-request frames.
+  bool hubRequestFrameReady_ = false;
+  uint8_t hubRequestFrameReadyDeviceIdx_ = 0;
+  uint8_t hubRequestFrameReadyMac_[6] = {0};
+  uint8_t hubRequestFrameBuffer_[kHubRequestBufferBytes];
+  size_t hubRequestFrameBufferLen_ = 0;
 };
 
 }  // namespace nhos

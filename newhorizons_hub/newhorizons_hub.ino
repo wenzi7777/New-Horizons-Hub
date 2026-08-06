@@ -20,6 +20,7 @@
 
 #include "EspNowCommandDispatcher.h"
 #include "EspNowHubManager.h"
+#include "EspNowOtaRelay.h"
 #include "HubConfig.h"
 #include "HubConfigPortal.h"
 #include "HubUplinkClient.h"
@@ -48,6 +49,7 @@ nhos::HubConfigPortal configPortal;
 nhos::EspNowHubManager hubManager;
 nhos::HubUplinkClient uplink;
 nhos::EspNowCommandDispatcher commandDispatcher;
+nhos::EspNowOtaRelay otaRelay;
 nhos::OtaManager ota;
 
 // 30s mirrors the removed DirectWebUI::pairedDevicesHtml()'s own staleness
@@ -58,6 +60,25 @@ constexpr uint32_t kPairedStaleMs = 30000;
 
 bool portalMode = false;
 bool uplinkStarted = false;
+
+// GCU V2.3.D has no physical setup/factory-reset button (a future board
+// revision adds one) -- until then, this is the recovery path for "Wi-Fi
+// credentials are wrong / Backend unreachable / user just wants back into
+// setup" with no other way to reach the Hub: power the Hub off and back on
+// kQuickBootThreshold times in a row, each cycle interrupted before
+// kQuickBootGraceMs of stable uptime. Tracked via a persisted (NVS, not RTC
+// -- RTC memory doesn't survive a true power loss, only sleep/soft-reset)
+// boot counter, incremented once per boot and cleared once the Hub has
+// stayed powered long enough that the current boot clearly isn't part of a
+// quick-cycle sequence. Both numbers are starting guesses (fast enough to
+// need deliberate action, slow enough a normal boot doesn't trip it by
+// accident) -- tune from real-hardware use, not a promise.
+constexpr uint8_t kQuickBootThreshold = 5;
+constexpr uint32_t kQuickBootGraceMs = 5000;
+constexpr char kQuickBootCountKey[] = "hub_qb_count";  // Preferences 15-char limit
+
+uint32_t bootMs = 0;
+bool quickBootCounterCleared = false;
 
 void onEspNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
   hubManager.handleEspNowRecv(info->src_addr, data, static_cast<size_t>(len));
@@ -87,6 +108,43 @@ void onHubControlFrameReady(uint8_t deviceIndex, const uint8_t* mac, const uint8
   commandDispatcher.handleControlResponse(deviceIndex, mac, data, len);
 }
 
+// Device-initiated hub-request traffic (kEspNowFragTypeHubRequest --
+// fetch_manifest/ota_relay_start JSON asks, see EspNowOtaRelay.h). This
+// demux is the only place that inspects `hub_req` -- add new hub_req
+// values here if this channel ever carries anything besides OTA relay
+// asks.
+void onHubRequestFrameReady(uint8_t /*deviceIndex*/, const uint8_t* mac, const uint8_t* data,
+                             size_t len, void* /*userData*/) {
+  const String payload(reinterpret_cast<const char*>(data), len);
+  String hubReq;
+  nhos::jsonExtractString(payload, "hub_req", hubReq);
+  if (hubReq == "fetch_manifest") {
+    String manifestUrl;
+    nhos::jsonExtractString(payload, "manifest_url", manifestUrl);
+    otaRelay.handleFetchManifestRequest(mac, manifestUrl);
+    return;
+  }
+  if (hubReq == "ota_relay_start") {
+    String url;
+    String sha256;
+    long size = 0;
+    nhos::jsonExtractString(payload, "url", url);
+    nhos::jsonExtractString(payload, "sha256", sha256);
+    nhos::jsonExtractInt(payload, "size", size);
+    otaRelay.handleRelayStartRequest(mac, url, sha256, size > 0 ? static_cast<size_t>(size) : 0);
+    return;
+  }
+  Serial.printf("[hub] unknown_hub_req req=%s\n", hubReq.c_str());
+}
+
+// OTA chunk ack (device -> Hub, raw 3-byte packet). See
+// EspNowOtaRelay::handleChunkAck()'s comment for why this stays minimal
+// here too -- it's called straight from EspNowHubManager::handleEspNowRecv(),
+// which runs on the raw ESP-NOW recv callback (small stack, no I/O).
+void onOtaChunkAckReceived(const uint8_t mac[6], uint16_t chunkIndex, void* /*userData*/) {
+  otaRelay.handleChunkAck(mac, chunkIndex);
+}
+
 // Backend -> Hub command, forwarded from HubUplinkClient's WS text-frame
 // parsing to the dispatcher for ESP-NOW delivery + retry.
 void onUplinkCommand(const String& deviceUid, const String& payloadJson, void* /*userData*/) {
@@ -105,6 +163,32 @@ void performFactoryReset() {
   storage.putString("hub_target_mode", "");
   storage.putString("hub_manual_url", "");
   storage.putString("hub_auth_token", "");
+}
+
+// Must run before anything else in setup() touches kQuickBootCountKey.
+// Returns true exactly once this boot's count hits kQuickBootThreshold --
+// the caller is responsible for performFactoryReset() + entering the
+// portal; this function only tracks the count itself.
+bool consumeQuickBootFactoryResetTrigger() {
+  const uint32_t count = storage.getUInt(kQuickBootCountKey, 0) + 1;
+  if (count >= kQuickBootThreshold) {
+    storage.putUInt(kQuickBootCountKey, 0);
+    return true;
+  }
+  storage.putUInt(kQuickBootCountKey, count);
+  return false;
+}
+
+// Call every loop() tick (both portal and normal mode). Once the Hub has
+// stayed powered for kQuickBootGraceMs without a reset, this boot no
+// longer counts toward a quick-cycle sequence -- clear it so an unrelated
+// future power cycle (e.g. moving the device) starts counting from zero
+// rather than compounding with whatever was left over.
+void serviceQuickBootCounterClear() {
+  if (quickBootCounterCleared) return;
+  if (millis() - bootMs < kQuickBootGraceMs) return;
+  storage.putUInt(kQuickBootCountKey, 0);
+  quickBootCounterCleared = true;
 }
 
 // Backend -> Hub-itself command (the WS session identifies which Hub, so
@@ -277,18 +361,39 @@ void updateRuntimeLed() {
 void setup() {
   Serial.begin(115200);
   delay(300);
+  bootMs = millis();
 
   storage.begin();
   leds.begin();
   leds.setSignal(nhos::LedSignal::Boot);
 
+  // Checked before anything else reads/writes Hub config -- see
+  // consumeQuickBootFactoryResetTrigger()'s comment above. A quick-cycle
+  // trigger takes priority over (and produces the same outcome as) the
+  // ordinary "no Wi-Fi credentials yet" portal entry just below, so it's
+  // handled first and returns early.
+  if (consumeQuickBootFactoryResetTrigger()) {
+    Serial.println("[hub] quick_boot_factory_reset_triggered");
+    performFactoryReset();
+    // Re-load into the in-memory struct too -- hubConfig.load() hasn't run
+    // yet this boot, so this just seeds it with the fresh (now-cleared)
+    // NVS state, same as any other first-time boot.
+    hubConfig.load(storage);
+    leds.showEvent(nhos::LedSignal::Error);
+    portalMode = true;
+    configPortal.begin(&storage, &hubConfig);
+    leds.setSignal(nhos::LedSignal::WifiSetup);
+    return;
+  }
+
   hubConfig.load(storage);
 
   // GCU V2.3.D has no physical setup button -- "no Wi-Fi credentials yet"
-  // is the only trigger for entering this portal; re-entry after first
-  // boot is via the portal's own Factory Reset link, or remotely via a
-  // `factory_reset` gateway_command while still online (see
-  // HubConfigPortal.h and handleGatewayCommand() below). The portal's
+  // is the only OTHER trigger for entering this portal (besides the
+  // quick-boot-cycle one above); re-entry after first boot is via the
+  // portal's own Factory Reset link, or remotely via a `factory_reset`
+  // gateway_command while still online (see HubConfigPortal.h and
+  // handleGatewayCommand() below). The portal's
   // single form collects Wi-Fi credentials AND Hub settings
   // (gateway_id/target_mode/etc.) together, so this one check gates both.
   //
@@ -321,7 +426,10 @@ void setup() {
   esp_now_register_recv_cb(onEspNowRecv);
   hubManager.onFrameReady(onHubFrameReady, nullptr);
   hubManager.onControlFrameReady(onHubControlFrameReady, nullptr);
+  hubManager.onHubRequestFrameReady(onHubRequestFrameReady, nullptr);
+  hubManager.onOtaChunkAck(onOtaChunkAckReceived, nullptr);
   commandDispatcher.begin(&hubManager, &uplink);
+  otaRelay.begin(&hubManager);
   uplink.onCommand(onUplinkCommand, nullptr);
   uplink.onGatewayCommand(handleGatewayCommand, nullptr);
 
@@ -346,6 +454,8 @@ void setup() {
 }
 
 void loop() {
+  serviceQuickBootCounterClear();
+
   if (portalMode) {
     configPortal.service();
     leds.service(millis());
@@ -356,6 +466,7 @@ void loop() {
   startUplinkIfReady();
   hubManager.service();
   commandDispatcher.service();
+  otaRelay.service();
   uplink.service();
   uplink.sendGatewayStatus(hubManager.registeredCount(), buildPairedDevicesJson(),
                             buildPairedDevicesDetailJson());
