@@ -57,6 +57,16 @@ class EspNowCommandDispatcher {
   // kEspNowControlAckMagic comment for why this exists.
   void handleControlAck(const uint8_t mac[6]);
 
+  // True if ANY device currently has a command in flight (sent, acked, or
+  // awaiting response). Hub-side analog to
+  // NewHorizonsOS-OTA/firmware/newhorizons_os/EspNowPairing.h's
+  // hasPendingCommandWork(): wired into newhorizons_hub.ino's
+  // onHubFrameReady() to pause sensor-data forwarding to the uplink for the
+  // same airtime-contention reason -- except here the contention is the
+  // Hub's own blocking WSS send (HubUplinkClient::sendSensorPacket())
+  // stalling loop(), not a device's radio.
+  bool hasPendingCommand() const;
+
  private:
   struct PendingCommand {
     bool used = false;

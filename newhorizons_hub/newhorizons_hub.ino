@@ -79,10 +79,33 @@ void onEspNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len)
 }
 
 uint32_t framesForwarded = 0;
+uint32_t framesDroppedForCommand = 0;
 uint32_t lastFrameLogMs = 0;
+bool sensorForwardWasPaused = false;
 
 void onHubFrameReady(uint8_t /*deviceIndex*/, const uint8_t* /*mac*/,
                       const uint8_t* data, size_t len, void* /*userData*/) {
+  if (commandDispatcher.hasPendingCommand()) {
+    // Sensor data is lossy by design (see EspNowStreamTransport.h) -- drop
+    // this frame rather than let sendSensorPacket()'s blocking WSS send
+    // stall loop() during the command's ack/resend window. Real-hardware
+    // testing found this blocking send (up to ~55-60/sec under normal
+    // streaming) was starving EspNowCommandDispatcher::service()'s resend
+    // timing and EspNowHubManager's own ESP-NOW recv processing, causing
+    // command_delivery_timeout well into steady-state operation even
+    // though the same command succeeded reliably right after boot.
+    if (!sensorForwardWasPaused) {
+      sensorForwardWasPaused = true;
+      Serial.println("[hub] sensor_forward_paused reason=command_pending");
+    }
+    ++framesDroppedForCommand;
+    return;
+  }
+  if (sensorForwardWasPaused) {
+    sensorForwardWasPaused = false;
+    Serial.printf("[hub] sensor_forward_resumed frames_dropped=%lu\n",
+                  static_cast<unsigned long>(framesDroppedForCommand));
+  }
   uplink.sendSensorPacket(data, len);
   ++framesForwarded;
   const uint32_t now = millis();

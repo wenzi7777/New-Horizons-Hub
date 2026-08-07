@@ -156,6 +156,13 @@ void EspNowCommandDispatcher::handleControlAck(const uint8_t mac[6]) {
   }
 }
 
+bool EspNowCommandDispatcher::hasPendingCommand() const {
+  for (uint8_t i = 0; i < kEspNowCommandMaxPending; ++i) {
+    if (pending_[i].used) return true;
+  }
+  return false;
+}
+
 void EspNowCommandDispatcher::handleControlResponse(uint8_t /*deviceIndex*/, const uint8_t mac[6],
                                                       const uint8_t* data, size_t len) {
   if (uplink_ == nullptr) return;
