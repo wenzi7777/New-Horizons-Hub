@@ -9,6 +9,8 @@
 
 namespace nhos {
 
+uint8_t EspNowHubManager::sharedControlScratch_[kEspNowMaxFrameBytes] = {0};
+
 namespace {
 // NHO/Arduino/1's device UID sits at header byte 4 (magic=0-1, version=2,
 // flags=3, uid=4-9) -- see PacketBuilder.cpp's build()/buildHeartbeat(),

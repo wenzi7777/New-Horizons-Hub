@@ -45,10 +45,26 @@ void EspNowCommandDispatcher::begin(EspNowHubManager* hubManager, HubUplinkClien
 }
 
 void EspNowCommandDispatcher::sendFragmentsTo(const uint8_t mac[6], const String& json) {
-  EspNowFragment frags[kEspNowMaxFragCount];
+  // static, not a stack local: kEspNowMaxFragCount * sizeof(EspNowFragment)
+  // is ~8KB, far more stack than this task has (EspNowPairing.h's
+  // responseFrags_ comment documents a ~4KB stack array being enough to
+  // corrupt the heap on this hardware). Safe as static because this only
+  // ever runs on the main loop task -- sendCommand() is reached from
+  // uplink.service(), and service() from loop() -- never re-entrantly and
+  // never from an ESP-NOW recv callback.
+  static EspNowFragment frags[kEspNowDataFragCount];
   const uint8_t count = EspNowFragmenter::fragment(
       reinterpret_cast<const uint8_t*>(json.c_str()), json.length(), 0,
-      kEspNowFragTypeControl, frags, kEspNowMaxFragCount);
+      kEspNowFragTypeControl, frags, kEspNowDataFragCount);
+  if (count == 0) {
+    // Command payload itself too large to fragment -- would otherwise send
+    // nothing at all and leave the device waiting until the retry budget
+    // expired. Log it so this can never be a silent failure.
+    Serial.printf("[cmd_dispatch] fragment_failed payload_len=%u max=%u\n",
+                  static_cast<unsigned>(json.length()),
+                  static_cast<unsigned>(kEspNowDataFragCount * kEspNowFragMaxPayload));
+    return;
+  }
   for (uint8_t i = 0; i < count; ++i) {
     esp_now_send(mac, frags[i].bytes, frags[i].len);
   }

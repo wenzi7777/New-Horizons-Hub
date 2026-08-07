@@ -46,7 +46,7 @@ namespace nhos {
 // kEspNowMaxFragCount*kEspNowFragMaxPayload (3840B) total.
 constexpr size_t kOtaChunkSubHeaderLen = 4;
 constexpr size_t kOtaChunkPayloadBytes =
-    kEspNowMaxFragCount * kEspNowFragMaxPayload - kOtaChunkSubHeaderLen;
+    kEspNowDataFragCount * kEspNowFragMaxPayload - kOtaChunkSubHeaderLen;
 
 // Mirrors EspNowCommandDispatcher's own resend model exactly (0.5s * 30
 // attempts = 15s max time-to-timeout per chunk).
@@ -123,7 +123,7 @@ class EspNowOtaRelay {
   // resend) -- see kOtaChunkSendWindowUs. sendCurrentChunk() only
   // fragments the record and arms this; service() is what actually calls
   // esp_now_send(), one fragment per due tick.
-  EspNowFragment chunkFrags_[kEspNowMaxFragCount];
+  EspNowFragment chunkFrags_[kEspNowDataFragCount];
   uint8_t chunkFragCount_ = 0;
   uint8_t chunkFragsSent_ = 0;
   uint32_t chunkFragIntervalUs_ = 0;

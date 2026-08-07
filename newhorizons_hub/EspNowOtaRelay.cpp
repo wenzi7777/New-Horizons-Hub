@@ -13,10 +13,13 @@ void EspNowOtaRelay::begin(EspNowHubManager* hubManager) {
 }
 
 void EspNowOtaRelay::sendHubRequestReply(const uint8_t mac[6], const String& json) {
-  EspNowFragment frags[kEspNowMaxFragCount];
+  // static, not a stack local -- see EspNowCommandDispatcher.cpp's
+  // sendFragmentsTo() for the full reasoning (~8KB is far too much stack).
+  // Safe as static: main-loop context only.
+  static EspNowFragment frags[kEspNowDataFragCount];
   const uint8_t count = EspNowFragmenter::fragment(
       reinterpret_cast<const uint8_t*>(json.c_str()), json.length(), 0,
-      kEspNowFragTypeHubRequest, frags, kEspNowMaxFragCount);
+      kEspNowFragTypeHubRequest, frags, kEspNowDataFragCount);
   for (uint8_t i = 0; i < count; ++i) {
     esp_now_send(mac, frags[i].bytes, frags[i].len);
   }
@@ -181,7 +184,7 @@ void EspNowOtaRelay::sendCurrentChunk() {
   // across service() ticks instead of firing here in one go.
   chunkFragCount_ = EspNowFragmenter::fragment(
       chunkRecord_, kOtaChunkSubHeaderLen + chunkPayloadLen_, currentChunkIndex_,
-      kEspNowFragTypeOta, chunkFrags_, kEspNowMaxFragCount);
+      kEspNowFragTypeOta, chunkFrags_, kEspNowDataFragCount);
   chunkFragsSent_ = 0;
   chunkFragIntervalUs_ = chunkFragCount_ > 0 ? kOtaChunkSendWindowUs / chunkFragCount_ : 0;
   chunkNextFragDueUs_ = micros();

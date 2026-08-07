@@ -149,16 +149,39 @@ class EspNowHubManager {
   PairedDeviceInfo slotInfo(uint8_t index) const;
 
  private:
+  // Control-frame reassembly scratch, shared by every DeviceSlot rather
+  // than one buffer per slot. At kEspNowMaxFrameBytes (7680B, raised so
+  // the `status` response fits -- see EspNowFrame.h) a per-slot copy would
+  // cost 4x that, and real-hardware testing showed the resulting ~31KB
+  // RAM increase was enough to make the Hub's TLS handshake fail with
+  // "RSA ... BIGNUM - Memory allocation failed" and drop its backend
+  // uplink entirely.
+  //
+  // Safe to share because this class already reassembles at most one
+  // control frame at a time by construction: there is a single global
+  // controlFrameReady_/controlFrameReadyDeviceIdx_/controlFrameBuffer_
+  // slot below, so two devices completing control frames in the same tick
+  // would already clobber each other's completed frame regardless. Sharing
+  // the in-progress scratch just moves that same pre-existing constraint
+  // one step earlier, and EspNowCommandDispatcher's one-command-in-flight
+  // -per-device rule plus the WebUI's own single-dispatch serialisation
+  // keep concurrent control responses out of normal operation.
+  //
+  // The per-slot split that matters -- keeping control separate from the
+  // continuous *data* stream (see controlReassembler below) -- is
+  // unaffected: data still gets its own per-slot reassembler and scratch.
+  static uint8_t sharedControlScratch_[kEspNowMaxFrameBytes];
+
   struct DeviceSlot {
     DeviceSlot()
         : reassembler(scratch, sizeof(scratch)),
-          controlReassembler(controlScratch, sizeof(controlScratch)),
+          controlReassembler(sharedControlScratch_, sizeof(sharedControlScratch_)),
           hubRequestReassembler(hubRequestScratch, sizeof(hubRequestScratch)) {}
 
     bool used = false;
     bool registered = false;
     uint8_t mac[6] = {0};
-    uint8_t scratch[kEspNowMaxFragCount * kEspNowFragMaxPayload];
+    uint8_t scratch[kEspNowDataFrameBytes];
     EspNowReassembler reassembler;
     // Separate reassembler for kEspNowFragTypeControl frames (command
     // responses). Found on real hardware: a shared reassembler let a
@@ -168,8 +191,7 @@ class EspNowHubManager {
     // (by design, for the lossy data path) would corrupt/drop the control
     // response mid-reassembly, causing every EspNowCommandDispatcher
     // request to time out even though the device was actually responding.
-    uint8_t controlScratch[kEspNowMaxFragCount * kEspNowFragMaxPayload];
-    EspNowReassembler controlReassembler;
+    EspNowReassembler controlReassembler;  // backed by sharedControlScratch_
     // Same reasoning again, third time: device-initiated hub-request
     // traffic (fetch_manifest/ota_relay_start) gets its own reassembler
     // so it can't interleave with either data or Hub-initiated control
@@ -213,7 +235,7 @@ class EspNowHubManager {
   bool frameReady_ = false;
   uint8_t frameReadyDeviceIdx_ = 0;
   uint8_t frameReadyMac_[6] = {0};
-  uint8_t frameBuffer_[kEspNowMaxFragCount * kEspNowFragMaxPayload];
+  uint8_t frameBuffer_[kEspNowDataFrameBytes];
   size_t frameBufferLen_ = 0;
 
   // Same buffering scheme as above, but for control-type frames (device
@@ -226,7 +248,7 @@ class EspNowHubManager {
   bool controlFrameReady_ = false;
   uint8_t controlFrameReadyDeviceIdx_ = 0;
   uint8_t controlFrameReadyMac_[6] = {0};
-  uint8_t controlFrameBuffer_[kEspNowMaxFragCount * kEspNowFragMaxPayload];
+  uint8_t controlFrameBuffer_[kEspNowMaxFrameBytes];
   size_t controlFrameBufferLen_ = 0;
 
   // Same buffering scheme again, for device-initiated hub-request frames.
