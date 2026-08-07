@@ -226,7 +226,43 @@ void EspNowHubManager::sendPollTo(uint8_t idx) {
   pollSentUs_ = micros();
 }
 
+void EspNowHubManager::reapStaleSlots() {
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < kEspNowHubMaxDevices; ++i) {
+    DeviceSlot& slot = slots_[i];
+    if (!slot.used || now - slot.lastSeenMs <= kEspNowHubSlotStaleMs) {
+      continue;
+    }
+    // Must remove the ESP-NOW peer entry too, not just this manager's own
+    // bookkeeping -- esp_now_add_peer() fails with ESP_ERR_ESPNOW_EXIST if
+    // the MAC is already registered, so without this a device that later
+    // tries to re-pair would be silently blocked (registerPeerIfNeeded()
+    // treats any non-ESP_OK add_peer() result as failure and never sets
+    // registered=true) until a full Hub reboot wiped the peer table.
+    if (slot.registered) {
+      esp_now_del_peer(slot.mac);
+    }
+    slot.reassembler.reset();
+    slot.controlReassembler.reset();
+    slot.hubRequestReassembler.reset();
+    slot.used = false;
+    slot.registered = false;
+    slot.deviceUidKnown = false;
+    // A >kEspNowHubSlotStaleMs-stale slot can still legitimately be the
+    // current poll target -- pollNext()'s round-robin doesn't exclude
+    // stale slots from its candidate pool -- so this must be cleared
+    // explicitly rather than assumed away.
+    if (awaitingIdx_ == static_cast<int8_t>(i)) {
+      awaitingIdx_ = -1;
+    }
+  }
+}
+
 void EspNowHubManager::service() {
+  // Runs first so a reap that clears the current awaitingIdx_ this same
+  // tick is already reflected before the poll-timeout branch below runs.
+  reapStaleSlots();
+
   if (awaitingIdx_ >= 0) {
     const uint32_t elapsed = micros() - pollSentUs_;
     if (elapsed > kHubPollTimeoutUs) {

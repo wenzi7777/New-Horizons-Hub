@@ -52,6 +52,16 @@ constexpr size_t kHubRequestBufferBytes = 1024;
 // comment: achieved fps is an emergent, measured property of this design.
 constexpr uint32_t kHubPollTimeoutUs = 30000;  // 30ms
 
+// A device slot that hasn't been heard from in this long is reaped (freed
+// for reuse, ESP-NOW peer entry removed) by service()'s reapStaleSlots() --
+// otherwise a device that migrated to a different Hub (or just went away
+// permanently) stays "used" forever, this Hub keeps falsely reporting it
+// as paired/connected in every gateway_status heartbeat, and the roster
+// slot it occupies is never freed for a genuinely new 5th device. Single
+// source of truth -- newhorizons_hub.ino's buildPairedDevicesDetailJson()
+// also references this instead of keeping its own separate constant.
+constexpr uint32_t kEspNowHubSlotStaleMs = 30000;
+
 using HubFrameCallback = void (*)(uint8_t deviceIndex, const uint8_t mac[6],
                                    const uint8_t* data, size_t len,
                                    void* userData);
@@ -158,6 +168,7 @@ class EspNowHubManager {
   void registerPeerIfNeeded(DeviceSlot& slot);
   void pollNext();
   void sendPollTo(uint8_t idx);
+  void reapStaleSlots();
 
   DeviceSlot slots_[kEspNowHubMaxDevices];
   uint8_t pollCursor_ = 0;

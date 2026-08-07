@@ -52,12 +52,6 @@ nhos::EspNowCommandDispatcher commandDispatcher;
 nhos::EspNowOtaRelay otaRelay;
 nhos::OtaManager ota;
 
-// 30s mirrors the removed DirectWebUI::pairedDevicesHtml()'s own staleness
-// filter (kPairedStaleMs) -- generous relative to a device's background
-// HELLO retry interval so a briefly-quiet device doesn't flicker in/out of
-// the Desktop UI's paired-devices list.
-constexpr uint32_t kPairedStaleMs = 30000;
-
 bool portalMode = false;
 bool uplinkStarted = false;
 
@@ -262,11 +256,14 @@ String buildPairedDevicesJson() {
 
 // Richer display list for the Desktop UI's Manage Hub panel -- unlike
 // buildPairedDevicesJson()'s routing table above, this includes
-// not-yet-registered/UID-unknown slots too (status "pending"), and applies
-// the same 30s staleness filter the removed DirectWebUI::pairedDevicesHtml()
-// used, so a Hub that's forgotten its ESP-NOW peer (Hub reboot resets the
-// roster; devices re-register via background HELLO) doesn't show ghost
-// entries indefinitely.
+// not-yet-registered/UID-unknown slots too (status "pending"). The
+// staleness check below is now belt-and-suspenders -- EspNowHubManager
+// itself actively reaps (frees) slots past kEspNowHubSlotStaleMs (see
+// EspNowHubManager::reapStaleSlots(), called every service() tick before
+// this function runs each loop()), so a stale slot's `used` is already
+// false by the time slotInfo() is read here in the common case. Kept
+// anyway as a cheap defensive check, now pointed at the single shared
+// constant instead of its own separately-tracked copy.
 String buildPairedDevicesDetailJson() {
   String out = "[";
   bool any = false;
@@ -274,7 +271,7 @@ String buildPairedDevicesDetailJson() {
   for (uint8_t i = 0; i < nhos::EspNowHubManager::maxDevices(); ++i) {
     const nhos::EspNowHubManager::PairedDeviceInfo info = hubManager.slotInfo(i);
     if (!info.used) continue;
-    if (now - info.lastSeenMs > kPairedStaleMs) continue;
+    if (now - info.lastSeenMs > nhos::kEspNowHubSlotStaleMs) continue;
     if (any) out += ",";
     any = true;
     char macBuf[18];
