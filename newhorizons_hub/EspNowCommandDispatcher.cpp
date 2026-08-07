@@ -15,6 +15,17 @@ namespace {
 constexpr uint32_t kResendIntervalMs = 500;
 constexpr uint8_t kMaxAttempts = 30;
 
+// Deadline for the (possibly slow, possibly multi-fragment) response once
+// delivery is confirmed acked -- anchored to the ack event, not a
+// continuation of the pre-ack attempt budget, since execution time and
+// response-drain time are both variable. 10s comfortably covers the
+// largest known default duration_ms (3000ms, ControlServer.cpp's
+// calibration handlers) plus the paced response drain, while still
+// bounding how long a stuck slot blocks this device's next command (only
+// one command in flight per device by design -- see this header's own
+// comment).
+constexpr uint32_t kPostAckResponseTimeoutMs = 10000;
+
 bool parseDeviceUid(const String& deviceUid, uint8_t out[6]) {
   if (deviceUid.length() != 12) return false;
   for (size_t i = 0; i < 6; ++i) {
@@ -111,6 +122,14 @@ void EspNowCommandDispatcher::service() {
   for (uint8_t i = 0; i < kEspNowCommandMaxPending; ++i) {
     PendingCommand& entry = pending_[i];
     if (!entry.used) continue;
+    if (entry.acked) {
+      // Delivery confirmed -- never resend the raw command again, just
+      // wait out a separate, longer deadline for the response itself.
+      if (now - entry.ackedMs >= kPostAckResponseTimeoutMs) {
+        failPending(i, "command_delivery_timeout");
+      }
+      continue;
+    }
     if (entry.attempts >= kMaxAttempts) {
       failPending(i, "command_delivery_timeout");
       continue;
@@ -121,6 +140,18 @@ void EspNowCommandDispatcher::service() {
       ++entry.attempts;
       Serial.printf("[cmd_dispatch] resend device_uid=%s attempt=%u\n", entry.deviceUid.c_str(),
                     entry.attempts);
+    }
+  }
+}
+
+void EspNowCommandDispatcher::handleControlAck(const uint8_t mac[6]) {
+  for (uint8_t i = 0; i < kEspNowCommandMaxPending; ++i) {
+    PendingCommand& entry = pending_[i];
+    if (entry.used && !entry.acked && memcmp(entry.mac, mac, 6) == 0) {
+      entry.acked = true;
+      entry.ackedMs = millis();
+      Serial.printf("[cmd_dispatch] acked device_uid=%s\n", entry.deviceUid.c_str());
+      return;
     }
   }
 }

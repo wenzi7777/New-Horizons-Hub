@@ -139,6 +139,13 @@ void onOtaChunkAckReceived(const uint8_t mac[6], uint16_t chunkIndex, void* /*us
   otaRelay.handleChunkAck(mac, chunkIndex);
 }
 
+// Control-command delivery ack (device -> Hub, raw 1-byte packet). Same
+// minimal-handler pattern as onOtaChunkAckReceived above -- called straight
+// from the raw ESP-NOW recv callback.
+void onControlAckReceived(const uint8_t mac[6], void* /*userData*/) {
+  commandDispatcher.handleControlAck(mac);
+}
+
 // Backend -> Hub command, forwarded from HubUplinkClient's WS text-frame
 // parsing to the dispatcher for ESP-NOW delivery + retry.
 void onUplinkCommand(const String& deviceUid, const String& payloadJson, void* /*userData*/) {
@@ -425,6 +432,7 @@ void setup() {
   hubManager.onControlFrameReady(onHubControlFrameReady, nullptr);
   hubManager.onHubRequestFrameReady(onHubRequestFrameReady, nullptr);
   hubManager.onOtaChunkAck(onOtaChunkAckReceived, nullptr);
+  hubManager.onControlAck(onControlAckReceived, nullptr);
   commandDispatcher.begin(&hubManager, &uplink);
   otaRelay.begin(&hubManager);
   uplink.onCommand(onUplinkCommand, nullptr);

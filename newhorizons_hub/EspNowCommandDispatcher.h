@@ -50,6 +50,13 @@ class EspNowCommandDispatcher {
   void handleControlResponse(uint8_t deviceIndex, const uint8_t mac[6],
                               const uint8_t* data, size_t len);
 
+  // Wired to EspNowHubManager::onControlAck(). Marks the pending command
+  // for this device as delivered -- service() stops resending the raw
+  // command and switches to waiting out a separate, longer deadline for
+  // the (possibly slow) response instead. See EspNowPairing.h's
+  // kEspNowControlAckMagic comment for why this exists.
+  void handleControlAck(const uint8_t mac[6]);
+
  private:
   struct PendingCommand {
     bool used = false;
@@ -60,6 +67,8 @@ class EspNowCommandDispatcher {
     String payloadJson;
     uint32_t lastSentMs = 0;
     uint8_t attempts = 0;
+    bool acked = false;
+    uint32_t ackedMs = 0;
   };
 
   void sendFragmentsTo(const uint8_t mac[6], const String& json);

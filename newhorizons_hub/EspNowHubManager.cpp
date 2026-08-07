@@ -70,6 +70,11 @@ void EspNowHubManager::onOtaChunkAck(OtaAckCallback callback, void* userData) {
   otaAckCallbackUserData_ = userData;
 }
 
+void EspNowHubManager::onControlAck(ControlAckCallback callback, void* userData) {
+  controlAckCallback_ = callback;
+  controlAckCallbackUserData_ = userData;
+}
+
 int EspNowHubManager::findOrCreateSlot(const uint8_t mac[6]) {
   for (uint8_t i = 0; i < kEspNowHubMaxDevices; ++i) {
     if (slots_[i].used && memcmp(slots_[i].mac, mac, 6) == 0) {
@@ -135,6 +140,13 @@ void EspNowHubManager::handleEspNowRecv(const uint8_t mac[6], const uint8_t* dat
     if (otaAckCallback_ != nullptr) {
       const uint16_t chunkIndex = static_cast<uint16_t>(data[1]) | (static_cast<uint16_t>(data[2]) << 8);
       otaAckCallback_(slot.mac, chunkIndex, otaAckCallbackUserData_);
+    }
+    return;
+  }
+
+  if (len == kEspNowControlAckLen && data[0] == kEspNowControlAckMagic) {
+    if (controlAckCallback_ != nullptr) {
+      controlAckCallback_(slot.mac, controlAckCallbackUserData_);
     }
     return;
   }

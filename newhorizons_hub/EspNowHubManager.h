@@ -41,6 +41,17 @@ constexpr uint8_t kHubPollMagic = 0xE2;    // Hub -> device: "your turn now"
 constexpr uint8_t kOtaChunkAckMagic = 0xE6;
 constexpr size_t kOtaChunkAckLen = 3;
 
+// Control-command delivery ack, device -> Hub: raw 1-byte packet, sent the
+// instant the device finishes reassembling a command frame (before it even
+// starts processing it). Lets EspNowCommandDispatcher stop blind-resending
+// the raw command once delivery is confirmed, rather than only once the
+// (possibly slow) response fully arrives -- mirrors kOtaChunkAckMagic's
+// raw-packet handling but carries no payload (only one command is ever in
+// flight per device, nothing to disambiguate). MUST match
+// firmware/newhorizons_os/EspNowPairing.h's own kEspNowControlAckMagic.
+constexpr uint8_t kEspNowControlAckMagic = 0xE7;
+constexpr size_t kEspNowControlAckLen = 1;
+
 // Small reassembler size for device-initiated hub-request traffic
 // (fetch_manifest/ota_relay_start JSON, kEspNowFragTypeHubRequest) --
 // deliberately much smaller than kEspNowMaxFragCount*kEspNowFragMaxPayload
@@ -96,6 +107,12 @@ class EspNowHubManager {
   // frame -- see kOtaChunkAckMagic). Wired to EspNowOtaRelay.
   using OtaAckCallback = void (*)(const uint8_t mac[6], uint16_t chunkIndex, void* userData);
   void onOtaChunkAck(OtaAckCallback callback, void* userData);
+
+  // Control-command delivery ack (device -> Hub, raw 1-byte packet, not a
+  // reassembled frame -- see kEspNowControlAckMagic). Wired to
+  // EspNowCommandDispatcher.
+  using ControlAckCallback = void (*)(const uint8_t mac[6], void* userData);
+  void onControlAck(ControlAckCallback callback, void* userData);
 
   // Call every loop() iteration: drives the poll-advance/timeout state
   // machine and dispatches any completed frame to the registered callback.
@@ -183,6 +200,8 @@ class EspNowHubManager {
   void* hubRequestFrameCallbackUserData_ = nullptr;
   OtaAckCallback otaAckCallback_ = nullptr;
   void* otaAckCallbackUserData_ = nullptr;
+  ControlAckCallback controlAckCallback_ = nullptr;
+  void* controlAckCallbackUserData_ = nullptr;
 
   // A completed frame is buffered here (copied out of the reassembler's
   // scratch buffer, which is only valid until that device's next
