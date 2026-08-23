@@ -200,6 +200,10 @@ void EspNowHubManager::handleEspNowRecv(const uint8_t mac[6], const uint8_t* dat
       return;
     }
 
+    // This is intentionally an opaque relay: only the stable 24-byte NHO
+    // header and its fixed UID bytes are inspected here.  Do not branch on
+    // packet version or decode optional payload blocks; v2-v5 and future
+    // extensions must reach the uplink byte-for-byte unchanged.
     if (!slot.deviceUidKnown && frame.len >= kPacketHeaderLen) {
       memcpy(slot.deviceUid, frame.data + kDeviceUidOffset, 6);
       slot.deviceUidKnown = true;
