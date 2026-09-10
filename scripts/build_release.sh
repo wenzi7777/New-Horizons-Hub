@@ -8,7 +8,7 @@ BUILD_PATH="${OUT_DIR}/compile"
 RELEASE_DIR="${ROOT}/releases/artifacts"
 MANIFEST_DIR="${ROOT}/releases"
 FQBN="${FQBN:-esp32:esp32:esp32s3:FlashSize=4M,PartitionScheme=min_spiffs}"
-VERSION="${VERSION:-v0.1.0}"
+VERSION="${VERSION:-v0.5.0}"
 # Must match Config.h's kHardwareModel exactly -- OtaManager::parseManifest()
 # rejects the manifest otherwise.
 MODEL="${MODEL:-VD-CTL/R v2.3.D GCU LTS (Hub)}"

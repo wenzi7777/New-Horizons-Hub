@@ -17,7 +17,8 @@ RAM use) into a no-PSRAM board is unnecessary risk.
 
 `Config.h`, `BoardConfig.h`, `Storage.h/.cpp`, `WifiManager.h/.cpp`,
 `LedController.h/.cpp`, `BoardPins.h/.cpp`, `EspNowFrame.h/.cpp`,
-`JsonUtils.h/.cpp`, `OtaManager.h/.cpp` started as copies of the same files
+`JsonUtils.h/.cpp`, `OtaManager.h/.cpp`, `PowerManager.h/.cpp`,
+`PowerStatusJson.h/.cpp` started as copies of the same files
 in `NewHorizonsOS-OTA/firmware/newhorizons_os/`. Since this Hub firmware now
 lives in a separate repo from the device firmware, there is no
 build-system or git mechanism keeping them in sync at all — **if you change

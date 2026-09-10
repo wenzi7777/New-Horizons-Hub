@@ -15,9 +15,11 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <Wire.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 
+#include "BoardPins.h"
 #include "EspNowCommandDispatcher.h"
 #include "EspNowHubManager.h"
 #include "EspNowOtaRelay.h"
@@ -27,6 +29,7 @@
 #include "JsonUtils.h"
 #include "LedController.h"
 #include "OtaManager.h"
+#include "PowerManager.h"
 #include "Storage.h"
 #include "WifiManager.h"
 
@@ -51,6 +54,7 @@ nhos::HubUplinkClient uplink;
 nhos::EspNowCommandDispatcher commandDispatcher;
 nhos::EspNowOtaRelay otaRelay;
 nhos::OtaManager ota;
+nhos::PowerManager power;
 
 bool portalMode = false;
 bool uplinkStarted = false;
@@ -380,6 +384,13 @@ void updateRuntimeLed() {
     leds.setSignal(nhos::LedSignal::UplinkDegraded);
     return;
   }
+  // Deliberately NOT showing charge state on this LED. With no fuel gauge
+  // on GCU V2.3.D the BQ25180 cannot tell "charging" from "no battery
+  // fitted" (hence ChargeState::ChargingOrMissing), and a Hub is a
+  // mains-powered relay that usually has no battery at all -- so driving
+  // the LED from charge state would leave the common case sitting on a
+  // permanent amber instead of Online. Connectivity is what this single
+  // pixel is for.
   leds.setSignal(nhos::LedSignal::Online);
 }
 
@@ -393,6 +404,24 @@ void setup() {
   storage.begin();
   leds.begin();
   leds.setSignal(nhos::LedSignal::Boot);
+
+  // Charger bring-up happens here, ahead of both early returns below
+  // (quick-boot factory reset, and "no Wi-Fi credentials yet" portal mode):
+  // sitting in the setup portal is precisely when the Hub is most likely to
+  // be plugged into USB, and it must charge there too.
+  //
+  // The BQ25180 charges on its own with reset-default registers, so this is
+  // not what makes charging work -- it is what makes it charge on *our*
+  // terms (4.2 V VBAT, the profile's ICHG, input limit and safety timer)
+  // instead of the chip's defaults.
+  Wire.begin(nhos::kI2cSda, nhos::kI2cScl, NHOS_BOARD_I2C_HZ);
+  power.begin(storage.getString("charge_profile", "slow"));
+  // Full status rather than just profileName(): profileName() returns the
+  // *requested* profile whether or not the register writes landed, and a
+  // Hub has no power UI anywhere else (no Desktop field, no LED), so this
+  // boot line is the only place a failed charger bring-up is visible.
+  // `configured` and `last_config_error` are the fields to read.
+  Serial.printf("[hub] power=%s\n", power.statusJson().c_str());
 
   // Checked before anything else reads/writes Hub config -- see
   // consumeQuickBootFactoryResetTrigger()'s comment above. A quick-cycle
@@ -486,6 +515,7 @@ void loop() {
 
   if (portalMode) {
     configPortal.service();
+    power.service(millis());
     leds.service(millis());
     return;
   }
@@ -498,6 +528,7 @@ void loop() {
   uplink.service();
   uplink.sendGatewayStatus(hubManager.registeredCount(), buildPairedDevicesJson(),
                             buildPairedDevicesDetailJson());
+  power.service(millis());
   updateRuntimeLed();
   leds.service(millis());
 }
