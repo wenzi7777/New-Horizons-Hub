@@ -8,11 +8,12 @@ namespace nhos {
 
 namespace {
 // Distinct from firmware/newhorizons_os/Config.h's kDefaultApSsidPrefix/
-// kSetupPortalDomain (NewHorizonsOS / newhorizons.os) on purpose -- a Hub's
-// setup AP should be visibly different from a device's, since a site could
-// have both broadcasting at once.
-constexpr char kHubApSsidPrefix[] = "NewHorizonsHub";
-constexpr char kHubSetupPortalDomain[] = "newhorizons.hub";
+// kSetupPortalDomain (NHOS / nhos.os) on purpose -- a Hub's setup AP should
+// be visibly different from a device's, since a site could have both
+// broadcasting at once. The prefixes differ from their first character
+// (NHHub- vs NHOS-) so the two are told apart in a Wi-Fi picker at a glance.
+constexpr char kHubApSsidPrefix[] = "NHHub";
+constexpr char kHubSetupPortalDomain[] = "nhos.hub";
 }  // namespace
 
 void HubConfigPortal::begin(Storage* storage, HubConfig* hubConfig) {
@@ -154,7 +155,7 @@ String HubConfigPortal::page(const String& message, bool success) const {
   out.reserve(2600);
   out += F("<!doctype html><html><head><meta charset=\"utf-8\">");
   out += F("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
-  out += F("<title>New Horizons Hub Setup</title>");
+  out += F("<title>NHOS Hub Setup</title>");
   out += F("<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;background:#101417;color:#eef2f5}");
   out += F("main{max-width:440px;margin:0 auto;padding:28px 20px}h1{font-size:24px;margin:0 0 8px}");
   out += F("p{color:#b9c2ca;line-height:1.45}label{display:block;margin:16px 0 6px;color:#dce3e8}");
@@ -162,7 +163,7 @@ String HubConfigPortal::page(const String& message, bool success) const {
   out += F("button{width:100%;margin-top:20px;padding:12px;font-size:16px;border:0;border-radius:6px;background:#2dd4bf;color:#041011;font-weight:700}");
   out += F(".reset{background:#3a2323;color:#f5b1b1;margin-top:10px}");
   out += F(".msg{padding:10px 12px;border-radius:6px;background:#1f2930}.ok{background:#12382f}</style></head><body><main>");
-  out += F("<h1>New Horizons Hub Setup</h1>");
+  out += F("<h1>NHOS Hub Setup</h1>");
   out += F("<p>Connect this Hub to your Wi-Fi and choose which Backend it reports to. "
            "A Gateway ID is generated automatically -- rename it or change these settings "
            "later from the Desktop app's Manage Hub panel, once this Hub is online.</p>");

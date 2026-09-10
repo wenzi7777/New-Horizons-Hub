@@ -6,7 +6,7 @@
 
 namespace nhos {
 
-static constexpr char kProductName[] = "New Horizons OS Arduino";
+static constexpr char kProductName[] = "NHOS Arduino";
 static constexpr char kProtocolName[] = "NHO/Arduino/1";
 // This Hub firmware and the device firmware (New-Horizons-OS repo) can
 // both target the same physical board (same NHOS_BOARD_NAME), which would
@@ -64,9 +64,9 @@ static constexpr uint8_t kSafeModeBootFailures = 3;
 static constexpr size_t kDefaultLogMaxBytes = 12 * 1024;
 static constexpr size_t kExtendedLogMaxBytes = 24 * 1024;
 
-static constexpr char kDefaultApSsidPrefix[] = "NewHorizonsOS";
+static constexpr char kDefaultApSsidPrefix[] = "NHOS";
 static constexpr char kDefaultApPassword[] = "";
-static constexpr char kSetupPortalDomain[] = "newhorizons.os";
+static constexpr char kSetupPortalDomain[] = "nhos.os";
 static constexpr uint16_t kSetupPortalPort = 80;
 static constexpr char kDefaultUpdateManifestUrl[] =
     NHOS_BOARD_DEFAULT_OTA_MANIFEST_URL;
