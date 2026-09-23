@@ -81,7 +81,17 @@ class EspNowCommandDispatcher {
     uint32_t ackedMs = 0;
   };
 
-  void sendFragmentsTo(const uint8_t mac[6], const String& json);
+  // Queues a fragment burst for paced transmission. Never sends the whole
+  // burst in one go: esp_now_send()'s internal queue is small, and the
+  // device side reports ~1-2 radio-level failures per 22 fragments when a
+  // burst is not spread out (see EspNowPairing.h on the device). Commands
+  // used to be single-fragment, so this never bit -- installing an app
+  // package makes multi-fragment commands routine.
+  // False when a burst is already draining and this one was NOT queued --
+  // there is one outbound buffer because there is one radio, and
+  // overwriting it would truncate the burst in flight.
+  bool queueFragmentsTo(const uint8_t mac[6], const String& json);
+  void servicePacedSend(uint32_t nowUs);
   void rejectImmediately(const String& deviceUid, const String& requestId,
                           const String& command, const char* message);
   void completePending(uint8_t idx, const String& response);
@@ -90,6 +100,17 @@ class EspNowCommandDispatcher {
   EspNowHubManager* hubManager_ = nullptr;
   HubUplinkClient* uplink_ = nullptr;
   PendingCommand pending_[kEspNowCommandMaxPending];
+
+  // One outbound burst at a time. Shared rather than per-device because the
+  // radio is shared: only one fragment can be on the air regardless of how
+  // many devices have a command pending. Mirrors
+  // NewHorizonsOS-OTA/.../EspNowStreamTransport's pacing state machine.
+  EspNowFragment outFrags_[kEspNowDataFragCount];
+  uint8_t outMac_[6] = {0};
+  uint8_t outCount_ = 0;
+  uint8_t outSent_ = 0;
+  uint32_t outFragIntervalUs_ = 0;
+  uint32_t outNextDueUs_ = 0;
 };
 
 }  // namespace nhos

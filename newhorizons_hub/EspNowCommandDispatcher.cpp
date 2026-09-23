@@ -37,6 +37,12 @@ bool parseDeviceUid(const String& deviceUid, uint8_t out[6]) {
   }
   return true;
 }
+
+// Mirrors NewHorizonsOS-OTA/.../EspNowStreamTransport.cpp's kSendWindowUs --
+// same reasoning, and generous relative to kResendIntervalMs so a burst
+// always completes well before its own resend would fire.
+constexpr uint32_t kSendWindowUs = 15000;
+
 }  // namespace
 
 void EspNowCommandDispatcher::begin(EspNowHubManager* hubManager, HubUplinkClient* uplink) {
@@ -44,18 +50,25 @@ void EspNowCommandDispatcher::begin(EspNowHubManager* hubManager, HubUplinkClien
   uplink_ = uplink;
 }
 
-void EspNowCommandDispatcher::sendFragmentsTo(const uint8_t mac[6], const String& json) {
-  // static, not a stack local: kEspNowMaxFragCount * sizeof(EspNowFragment)
-  // is ~8KB, far more stack than this task has (EspNowPairing.h's
-  // responseFrags_ comment documents a ~4KB stack array being enough to
-  // corrupt the heap on this hardware). Safe as static because this only
-  // ever runs on the main loop task -- sendCommand() is reached from
-  // uplink.service(), and service() from loop() -- never re-entrantly and
-  // never from an ESP-NOW recv callback.
-  static EspNowFragment frags[kEspNowDataFragCount];
+bool EspNowCommandDispatcher::queueFragmentsTo(const uint8_t mac[6], const String& json) {
+  if (outSent_ < outCount_) {
+    // A burst is still going out, and there is only one outbound buffer
+    // because there is only one radio. Overwriting it here would truncate
+    // the burst already in flight -- the receiver would wait for fragments
+    // that are never sent and fall back on the retry budget. The caller
+    // leaves the command due for a resend instead.
+    return false;
+  }
+  // outFrags_ is a member rather than a stack local: kEspNowDataFragCount *
+  // sizeof(EspNowFragment) is ~4KB, far more stack than this task has
+  // (EspNowPairing.h's responseFrags_ comment documents a ~4KB stack array
+  // being enough to corrupt the heap on this hardware). Safe as a member
+  // because this only ever runs on the main loop task -- sendCommand() is
+  // reached from uplink.service(), and service() from loop() -- never
+  // re-entrantly and never from an ESP-NOW recv callback.
   const uint8_t count = EspNowFragmenter::fragment(
       reinterpret_cast<const uint8_t*>(json.c_str()), json.length(), 0,
-      kEspNowFragTypeControl, frags, kEspNowDataFragCount);
+      kEspNowFragTypeControl, outFrags_, kEspNowDataFragCount);
   if (count == 0) {
     // Command payload itself too large to fragment -- would otherwise send
     // nothing at all and leave the device waiting until the retry budget
@@ -63,11 +76,27 @@ void EspNowCommandDispatcher::sendFragmentsTo(const uint8_t mac[6], const String
     Serial.printf("[cmd_dispatch] fragment_failed payload_len=%u max=%u\n",
                   static_cast<unsigned>(json.length()),
                   static_cast<unsigned>(kEspNowDataFragCount * kEspNowFragMaxPayload));
+    return true;  // unsendable, not deferred -- a resend would fail the same way
+  }
+  memcpy(outMac_, mac, 6);
+  outCount_ = count;
+  outSent_ = 0;
+  outFragIntervalUs_ = kSendWindowUs / count;
+  outNextDueUs_ = micros();
+  servicePacedSend(outNextDueUs_);  // first fragment goes immediately
+  return true;
+}
+
+void EspNowCommandDispatcher::servicePacedSend(uint32_t nowUs) {
+  if (outSent_ >= outCount_) {
     return;
   }
-  for (uint8_t i = 0; i < count; ++i) {
-    esp_now_send(mac, frags[i].bytes, frags[i].len);
+  if (static_cast<int32_t>(nowUs - outNextDueUs_) < 0) {
+    return;
   }
+  esp_now_send(outMac_, outFrags_[outSent_].bytes, outFrags_[outSent_].len);
+  ++outSent_;
+  outNextDueUs_ += outFragIntervalUs_;
 }
 
 void EspNowCommandDispatcher::rejectImmediately(const String& deviceUid, const String& requestId,
@@ -130,10 +159,24 @@ void EspNowCommandDispatcher::sendCommand(const String& deviceUid, const String&
                 "payload_len=%u\n",
                 deviceUid.c_str(), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], command.c_str(),
                 static_cast<unsigned>(payloadJson.length()));
-  sendFragmentsTo(mac, payloadJson);
+  if (!queueFragmentsTo(mac, payloadJson)) {
+    // Deferred behind another device's burst. Backdate it so service()
+    // sends it on the next tick rather than waiting a whole resend
+    // interval, and do not count the attempt -- nothing went out.
+    entry.attempts = 0;
+    entry.lastSentMs = millis() - kResendIntervalMs;
+  }
 }
 
 void EspNowCommandDispatcher::service() {
+  // Drain any burst still going out before considering a resend: starting a
+  // second burst on top of an unfinished one is exactly the pile-up the
+  // pacing exists to avoid.
+  servicePacedSend(micros());
+  if (outSent_ < outCount_) {
+    return;
+  }
+
   const uint32_t now = millis();
   for (uint8_t i = 0; i < kEspNowCommandMaxPending; ++i) {
     PendingCommand& entry = pending_[i];
@@ -151,7 +194,9 @@ void EspNowCommandDispatcher::service() {
       continue;
     }
     if (now - entry.lastSentMs >= kResendIntervalMs) {
-      sendFragmentsTo(entry.mac, entry.payloadJson);
+      if (!queueFragmentsTo(entry.mac, entry.payloadJson)) {
+        break;  // radio busy with another burst; try again next tick
+      }
       entry.lastSentMs = now;
       ++entry.attempts;
       Serial.printf("[cmd_dispatch] resend device_uid=%s attempt=%u\n", entry.deviceUid.c_str(),
