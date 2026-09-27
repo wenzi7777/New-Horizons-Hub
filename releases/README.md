@@ -7,14 +7,17 @@ what makes it live: `newhorizons_hub.ino`'s `kHubUpdateManifestUrl` points
 directly at `releases/hub-gcu-v23d-lts-latest.json` on this branch.
 
 - `releases/hub-gcu-v23d-lts-latest.json` and `releases/hub-gcu-v23d-lts-vX.Y.Z.json`
-  — manifest for `VD-CTL/R v2.3.D GCU LTS (Hub)`. Generated automatically by
+  — manifest for `TIA-CTL/R v2.3.D GCU LTS (Hub)`. Generated automatically by
   `VERSION=vX.Y.Z scripts/build_release.sh`, which also produces the
   matching `.bin` under `releases/artifacts/`.
 - `model` in the manifest is deliberately `VD-CTL/R v2.3.D GCU LTS (Hub)`,
   not the plain board name the device firmware (`New-Horizons-OS` repo)
   uses for the same physical board — `OtaManager::parseManifest()`'s
   `model_mismatch` check relies on that difference to refuse a manifest URL
-  pointed at the wrong repo/product.
+  pointed at the wrong repo/product. It also keeps the board's pre-rename
+  `VD-CTL/R` name even though the Hub now reports `TIA-CTL/R v2.3.D GCU LTS
+  (Hub)`: Hub firmware older than the rename accepts only an exact match,
+  while firmware since then accepts either (`kOtaManifestModel`).
 - `releases/notes/vX.Y.Z.md` — a changelog note, required before cutting a
   release (`build_release.sh` refuses to run without one, matching
   `New-Horizons-OS`'s and `New-Horizons-Gateway`'s own release process).
