@@ -8,9 +8,9 @@ BUILD_PATH="${OUT_DIR}/compile"
 RELEASE_DIR="${ROOT}/releases/artifacts"
 MANIFEST_DIR="${ROOT}/releases"
 FQBN="${FQBN:-esp32:esp32:esp32s3:FlashSize=4M,PartitionScheme=min_spiffs}"
-VERSION="${VERSION:-v0.5.2}"
+VERSION="${VERSION:-v0.5.3}"
 # Must match Config.h's kOtaManifestModel (the pre-rename VD-CTL/R name)
-# exactly: Hub firmware older than the TIA-CTL/R rename only accepts that.
+# exactly: Hub firmware older than the TIA-CTL rename only accepts that.
 MODEL="${MODEL:-VD-CTL/R v2.3.D GCU LTS (Hub)}"
 BASE_URL="${BASE_URL:-https://raw.githubusercontent.com/wenzi7777/New-Horizons-Hub/main/releases/artifacts}"
 # Requires releases/notes/${VERSION}.md to exist -- see releases/README.md.
