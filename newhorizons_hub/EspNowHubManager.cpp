@@ -297,10 +297,14 @@ void EspNowHubManager::service() {
   }
 
   if (controlFrameReady_ && controlFrameCallback_ != nullptr) {
+    // Cleared before the callback, not after: while it forwards a page of
+    // a paged reply it has already asked the device for the next one, and
+    // that page can finish reassembling during the callback's blocking WSS
+    // send. Clearing afterwards would throw that page away.
+    controlFrameReady_ = false;
     controlFrameCallback_(controlFrameReadyDeviceIdx_, controlFrameReadyMac_,
                            controlFrameBuffer_, controlFrameBufferLen_,
                            controlFrameCallbackUserData_);
-    controlFrameReady_ = false;
   }
 
   if (hubRequestFrameReady_ && hubRequestFrameCallback_ != nullptr) {

@@ -471,6 +471,19 @@ void setup() {
   const bool wifiConnected = wifi.begin(storage);
   leds.setSignal(wifiConnected ? nhos::LedSignal::Online : nhos::LedSignal::WifiSetup);
 
+  // Arduino-ESP32 starts an S3 station in WIFI_PS_MIN_MODEM, which powers
+  // the radio down between AP beacons -- and ESP-NOW frames from devices
+  // that arrive while it is down are missed and have to be resent. A Hub
+  // is mains-powered, so keep the radio on. The setting is remembered
+  // across the WiFi.mode() calls a reconnect makes.
+  wifi_ps_type_t psBefore = WIFI_PS_NONE;
+  esp_wifi_get_ps(&psBefore);
+  WiFi.setSleep(false);
+  wifi_ps_type_t psAfter = WIFI_PS_NONE;
+  esp_wifi_get_ps(&psAfter);
+  Serial.printf("[hub] wifi_power_save before=%d after=%d\n", static_cast<int>(psBefore),
+                static_cast<int>(psAfter));
+
   ota.begin(storage);
   if (wifiConnected) {
     serviceAutoOta();  // may ESP.restart() and never return

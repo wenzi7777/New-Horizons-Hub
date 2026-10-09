@@ -18,13 +18,26 @@ constexpr uint8_t kMaxAttempts = 30;
 // Deadline for the (possibly slow, possibly multi-fragment) response once
 // delivery is confirmed acked -- anchored to the ack event, not a
 // continuation of the pre-ack attempt budget, since execution time and
-// response-drain time are both variable. 10s comfortably covers the
-// largest known default duration_ms (3000ms, ControlServer.cpp's
-// calibration handlers) plus the paced response drain, while still
-// bounding how long a stuck slot blocks this device's next command (only
-// one command in flight per device by design -- see this header's own
+// response-drain time are both variable. A command carrying duration_ms
+// (the calibration captures, which block for that long before answering)
+// gets that much on top, so a long capture is not reported as a delivery
+// timeout while the device is still measuring. Still bounded, so a stuck
+// slot does not block this device's next command forever (only one
+// command in flight per device by design -- see this header's own
 // comment).
 constexpr uint32_t kPostAckResponseTimeoutMs = 10000;
+
+// The device's page envelope; see its EspNowResultPager.h.
+constexpr char kPagePrefix[] = "{\"type\":\"result_chunk\"";
+
+String pageRequestJson(long rid, long chunk) {
+  String json = "{\"command\":\"result_page\",\"rid\":";
+  json += rid;
+  json += ",\"chunk\":";
+  json += chunk;
+  json += "}";
+  return json;
+}
 
 bool parseDeviceUid(const String& deviceUid, uint8_t out[6]) {
   if (deviceUid.length() != 12) return false;
@@ -50,14 +63,15 @@ void EspNowCommandDispatcher::begin(EspNowHubManager* hubManager, HubUplinkClien
   uplink_ = uplink;
 }
 
-bool EspNowCommandDispatcher::queueFragmentsTo(const uint8_t mac[6], const String& json) {
+EspNowCommandDispatcher::QueueResult EspNowCommandDispatcher::queueFragmentsTo(
+    const uint8_t mac[6], const String& json) {
   if (outSent_ < outCount_) {
     // A burst is still going out, and there is only one outbound buffer
     // because there is only one radio. Overwriting it here would truncate
     // the burst already in flight -- the receiver would wait for fragments
     // that are never sent and fall back on the retry budget. The caller
     // leaves the command due for a resend instead.
-    return false;
+    return QueueResult::Busy;
   }
   // outFrags_ is a member rather than a stack local: kEspNowDataFragCount *
   // sizeof(EspNowFragment) is ~4KB, far more stack than this task has
@@ -70,13 +84,13 @@ bool EspNowCommandDispatcher::queueFragmentsTo(const uint8_t mac[6], const Strin
       reinterpret_cast<const uint8_t*>(json.c_str()), json.length(), 0,
       kEspNowFragTypeControl, outFrags_, kEspNowDataFragCount);
   if (count == 0) {
-    // Command payload itself too large to fragment -- would otherwise send
-    // nothing at all and leave the device waiting until the retry budget
-    // expired. Log it so this can never be a silent failure.
+    // Command payload itself too large to fragment. This used to be logged
+    // and then treated as sent, so the caller only heard about it as a
+    // command_delivery_timeout 15 s later; the caller now fails it at once.
     Serial.printf("[cmd_dispatch] fragment_failed payload_len=%u max=%u\n",
                   static_cast<unsigned>(json.length()),
                   static_cast<unsigned>(kEspNowDataFragCount * kEspNowFragMaxPayload));
-    return true;  // unsendable, not deferred -- a resend would fail the same way
+    return QueueResult::TooLarge;
   }
   memcpy(outMac_, mac, 6);
   outCount_ = count;
@@ -84,7 +98,7 @@ bool EspNowCommandDispatcher::queueFragmentsTo(const uint8_t mac[6], const Strin
   outFragIntervalUs_ = kSendWindowUs / count;
   outNextDueUs_ = micros();
   servicePacedSend(outNextDueUs_);  // first fragment goes immediately
-  return true;
+  return QueueResult::Queued;
 }
 
 void EspNowCommandDispatcher::servicePacedSend(uint32_t nowUs) {
@@ -155,11 +169,21 @@ void EspNowCommandDispatcher::sendCommand(const String& deviceUid, const String&
   entry.payloadJson = payloadJson;
   entry.attempts = 1;
   entry.lastSentMs = millis();
+  long durationMs = 0;
+  jsonExtractInt(payloadJson, "duration_ms", durationMs);
+  entry.responseTimeoutMs = kPostAckResponseTimeoutMs +
+                            (durationMs > 0 ? static_cast<uint32_t>(durationMs) : 0);
   Serial.printf("[cmd_dispatch] send device_uid=%s mac=%02X:%02X:%02X:%02X:%02X:%02X cmd=%s "
                 "payload_len=%u\n",
                 deviceUid.c_str(), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], command.c_str(),
                 static_cast<unsigned>(payloadJson.length()));
-  if (!queueFragmentsTo(mac, payloadJson)) {
+  const QueueResult queued = queueFragmentsTo(mac, payloadJson);
+  if (queued == QueueResult::TooLarge) {
+    pending_[freeIdx] = PendingCommand();
+    rejectImmediately(deviceUid, requestId, command, "command_too_large");
+    return;
+  }
+  if (queued == QueueResult::Busy) {
     // Deferred behind another device's burst. Backdate it so service()
     // sends it on the next tick rather than waiting a whole resend
     // interval, and do not count the attempt -- nothing went out.
@@ -184,17 +208,17 @@ void EspNowCommandDispatcher::service() {
     if (entry.acked) {
       // Delivery confirmed -- never resend the raw command again, just
       // wait out a separate, longer deadline for the response itself.
-      if (now - entry.ackedMs >= kPostAckResponseTimeoutMs) {
+      if (now - entry.ackedMs >= entry.responseTimeoutMs) {
         failPending(i, "command_delivery_timeout");
       }
       continue;
     }
     if (entry.attempts >= kMaxAttempts) {
-      failPending(i, "command_delivery_timeout");
+      failPending(i, entry.paging ? "result_page_timeout" : "command_delivery_timeout");
       continue;
     }
     if (now - entry.lastSentMs >= kResendIntervalMs) {
-      if (!queueFragmentsTo(entry.mac, entry.payloadJson)) {
+      if (queueFragmentsTo(entry.mac, entry.payloadJson) != QueueResult::Queued) {
         break;  // radio busy with another burst; try again next tick
       }
       entry.lastSentMs = now;
@@ -208,7 +232,10 @@ void EspNowCommandDispatcher::service() {
 void EspNowCommandDispatcher::handleControlAck(const uint8_t mac[6]) {
   for (uint8_t i = 0; i < kEspNowCommandMaxPending; ++i) {
     PendingCommand& entry = pending_[i];
-    if (entry.used && !entry.acked && memcmp(entry.mac, mac, 6) == 0) {
+    // A page ask is not acked: it is cheap and safe to repeat, so it is
+    // simply re-sent until its page arrives. That also keeps a late ack
+    // for an earlier send from passing for this one's.
+    if (entry.used && !entry.acked && !entry.paging && memcmp(entry.mac, mac, 6) == 0) {
       entry.acked = true;
       entry.ackedMs = millis();
       Serial.printf("[cmd_dispatch] acked device_uid=%s\n", entry.deviceUid.c_str());
@@ -236,8 +263,70 @@ void EspNowCommandDispatcher::handleControlResponse(uint8_t /*deviceIndex*/, con
   }
   if (idx < 0) return;  // unsolicited/late response -- nothing pending to match it to
 
+  // Copied before anything else: once the next page is asked for, the
+  // device may overwrite the frame buffer `data` points into.
   const String response(reinterpret_cast<const char*>(data), len);
+  if (response.startsWith(kPagePrefix)) {
+    handlePage(static_cast<uint8_t>(idx), response);
+    return;
+  }
+  // A plain reply while paging is the device turning a page ask down
+  // (result_page_expired); it ends the request with that error.
   completePending(static_cast<uint8_t>(idx), response);
+}
+
+void EspNowCommandDispatcher::handlePage(uint8_t idx, const String& response) {
+  PendingCommand& entry = pending_[idx];
+  long rid = -1;
+  long chunk = -1;
+  long chunks = 0;
+  jsonExtractInt(response, "rid", rid);
+  jsonExtractInt(response, "chunk", chunk);
+  jsonExtractInt(response, "chunks", chunks);
+  if (!entry.paging) {
+    if (chunk != 0 || chunks < 1) return;  // stray page from an older reply
+    entry.paging = true;
+    entry.pageRid = rid;
+    entry.chunks = chunks;
+    entry.pagingStartedMs = millis();
+    Serial.printf("[cmd_dispatch] paged_reply device_uid=%s rid=%ld pages=%ld\n",
+                  entry.deviceUid.c_str(), rid, chunks);
+  } else if (rid != entry.pageRid || chunk != entry.nextChunk) {
+    return;  // a repeat of a page already forwarded
+  }
+
+  const bool last = chunk + 1 >= entry.chunks;
+  // Ask for the next page before forwarding this one: the device builds
+  // and sends it while the (blocking) WSS send below runs.
+  if (!last) {
+    entry.nextChunk = chunk + 1;
+    entry.payloadJson = pageRequestJson(entry.pageRid, entry.nextChunk);
+    entry.acked = false;
+    entry.attempts = 1;
+    entry.lastSentMs = millis();
+    if (queueFragmentsTo(entry.mac, entry.payloadJson) != QueueResult::Queued) {
+      entry.attempts = 0;
+      entry.lastSentMs = millis() - kResendIntervalMs;
+    }
+  }
+
+  // The page goes up as the device wrote it; the Backend joins the
+  // "data" slices by request_id and parses the result.
+  String message = "{";
+  bool first = true;
+  jsonStringField(message, "device_uid", entry.deviceUid, first);
+  jsonStringField(message, "request_id", entry.requestId, first);
+  jsonStringField(message, "command", entry.command, first);
+  jsonRawField(message, "page", response, first);
+  message += "}";
+  uplink_->sendDeviceMessage("result_chunk", entry.deviceUid, message);
+
+  if (last) {
+    Serial.printf("[cmd_dispatch] paged_reply_done device_uid=%s pages=%ld elapsed_ms=%u\n",
+                  entry.deviceUid.c_str(), entry.chunks,
+                  static_cast<unsigned>(millis() - entry.pagingStartedMs));
+    pending_[idx] = PendingCommand();
+  }
 }
 
 void EspNowCommandDispatcher::completePending(uint8_t idx, const String& response) {

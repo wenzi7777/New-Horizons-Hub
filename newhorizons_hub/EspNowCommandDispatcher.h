@@ -20,6 +20,13 @@
 // second concurrent dispatch for the same device couldn't be matched to
 // the right response. A concurrent dispatch is rejected with an
 // immediate error result instead of silently overwriting the first.
+//
+// A reply too big for one ESP-NOW frame comes back paged (the device's
+// EspNowResultPager.h): page 0 answers the command, and this dispatcher
+// pulls the rest one at a time with {"command":"result_page",...}, sending
+// each page upstream as "device_result_chunk" for the Backend to reassemble.
+// Pulling rather than letting the device push keeps the Hub to one page in
+// memory, and lets a lost page simply be asked for again.
 
 #include <Arduino.h>
 
@@ -74,12 +81,24 @@ class EspNowCommandDispatcher {
     String deviceUid;
     String requestId;
     String command;
+    // What gets (re)sent: the command itself, then each result_page ask.
     String payloadJson;
     uint32_t lastSentMs = 0;
     uint8_t attempts = 0;
     bool acked = false;
     uint32_t ackedMs = 0;
+    // How long to wait for the reply once acked; longer for a capture
+    // that runs for duration_ms before answering.
+    uint32_t responseTimeoutMs = 0;
+    // Paged reply in progress (see the header comment).
+    bool paging = false;
+    long pageRid = 0;
+    long nextChunk = 0;
+    long chunks = 0;
+    uint32_t pagingStartedMs = 0;
   };
+
+  enum class QueueResult { Queued, Busy, TooLarge };
 
   // Queues a fragment burst for paced transmission. Never sends the whole
   // burst in one go: esp_now_send()'s internal queue is small, and the
@@ -87,10 +106,12 @@ class EspNowCommandDispatcher {
   // burst is not spread out (see EspNowPairing.h on the device). Commands
   // used to be single-fragment, so this never bit -- installing an app
   // package makes multi-fragment commands routine.
-  // False when a burst is already draining and this one was NOT queued --
+  // Busy when a burst is already draining and this one was NOT queued --
   // there is one outbound buffer because there is one radio, and
-  // overwriting it would truncate the burst in flight.
-  bool queueFragmentsTo(const uint8_t mac[6], const String& json);
+  // overwriting it would truncate the burst in flight. TooLarge when the
+  // payload does not fit kEspNowDataFragCount fragments at all.
+  QueueResult queueFragmentsTo(const uint8_t mac[6], const String& json);
+  void handlePage(uint8_t idx, const String& response);
   void servicePacedSend(uint32_t nowUs);
   void rejectImmediately(const String& deviceUid, const String& requestId,
                           const String& command, const char* message);

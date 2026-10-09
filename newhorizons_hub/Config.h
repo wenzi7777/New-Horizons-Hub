@@ -19,7 +19,7 @@ static constexpr char kProtocolName[] = "NHO/Arduino/1";
 static constexpr char kHardwareModel[] = NHOS_BOARD_NAME " (Hub)";
 // The pre-rename name OTA manifests still carry (see BoardConfig.h).
 static constexpr char kOtaManifestModel[] = NHOS_BOARD_OTA_MODEL " (Hub)";
-static constexpr char kFirmwareVersion[] = "v0.5.3";
+static constexpr char kFirmwareVersion[] = "v0.6.0";
 
 static constexpr uint16_t kRows = NHOS_BOARD_ROWS;
 static constexpr uint16_t kCols = NHOS_BOARD_COLS;

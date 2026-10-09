@@ -236,6 +236,8 @@ void HubUplinkClient::sendDeviceMessage(const char* msgType, const String& devic
     upstreamType = "device_update_progress";
   } else if (strcmp(msgType, "result") == 0) {
     upstreamType = "device_result";
+  } else if (strcmp(msgType, "result_chunk") == 0) {
+    upstreamType = "device_result_chunk";
   }
 
   String message = "{";
@@ -251,9 +253,9 @@ void HubUplinkClient::sendDeviceMessage(const char* msgType, const String& devic
 void HubUplinkClient::sendSensorPacket(const uint8_t* data, size_t len) {
   if (!connected_ || !helloSent_) return;
 
-  // base64 expands ~4/3; kEspNowMaxFragCount*kEspNowFragMaxPayload (3840B)
-  // is the largest frame this Hub ever reassembles, so size generously
-  // beyond that rather than against this specific call's `len`.
+  // base64 expands ~4/3; a sensor frame is at most kEspNowDataFrameBytes
+  // (3840B, the data-path fragment budget), so size generously beyond
+  // that rather than against this specific call's `len`.
   static char base64Buf[5200];
   const size_t encodedLen = base64Encode(data, len, base64Buf, sizeof(base64Buf));
   if (encodedLen == 0) return;  // frame too large for the buffer -- drop it
