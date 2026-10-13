@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <cstring>
 #include <esp_now.h>
+#include <esp_timer.h>
 #include <esp_wifi.h>
 
 #include "Config.h"
@@ -146,6 +147,23 @@ void EspNowHubManager::handleEspNowRecv(const uint8_t mac[6], const uint8_t* dat
     return;
   }
 
+  if (len == kEspNowTimeReqLen && data[0] == kEspNowTimeReqMagic) {
+    // t2's local stamp: taken on arrival, converted to wall time later in
+    // serviceTimeRequests(). The device subtracts the whole turnaround
+    // (t3 - t2), so answering from loop() costs no accuracy.
+    const int64_t rxMonoUs = esp_timer_get_time();
+    EspNowTimeRequest req;
+    if (slot.registered && decodeEspNowTimeRequest(data, len, &req)) {
+      portENTER_CRITICAL(&timeLock_);
+      slot.timeReqSeq = req.seq;
+      slot.timeReqT1Us = req.t1MonoUs;
+      slot.timeReqRxMonoUs = rxMonoUs;
+      slot.timeReqPending = true;
+      portEXIT_CRITICAL(&timeLock_);
+    }
+    return;
+  }
+
   if (len == kEspNowControlAckLen && data[0] == kEspNowControlAckMagic) {
     if (controlAckCallback_ != nullptr) {
       controlAckCallback_(slot.mac, controlAckCallbackUserData_);
@@ -266,6 +284,7 @@ void EspNowHubManager::reapStaleSlots() {
     slot.used = false;
     slot.registered = false;
     slot.deviceUidKnown = false;
+    slot.timeReqPending = false;
     // A >kEspNowHubSlotStaleMs-stale slot can still legitimately be the
     // current poll target -- pollNext()'s round-robin doesn't exclude
     // stale slots from its candidate pool -- so this must be cleared
@@ -276,10 +295,61 @@ void EspNowHubManager::reapStaleSlots() {
   }
 }
 
+void EspNowHubManager::setTimeProvider(TimeProvider provider, void* userData) {
+  timeProvider_ = provider;
+  timeProviderUserData_ = userData;
+}
+
+void EspNowHubManager::serviceTimeRequests() {
+  for (uint8_t i = 0; i < kEspNowHubMaxDevices; ++i) {
+    DeviceSlot& slot = slots_[i];
+    if (!slot.timeReqPending) {
+      continue;
+    }
+    EspNowTimeResponse resp;
+    int64_t rxMonoUs = 0;
+    portENTER_CRITICAL(&timeLock_);
+    resp.seq = slot.timeReqSeq;
+    resp.t1MonoUs = slot.timeReqT1Us;
+    rxMonoUs = slot.timeReqRxMonoUs;
+    slot.timeReqPending = false;
+    portEXIT_CRITICAL(&timeLock_);
+    if (!slot.used || !slot.registered) {
+      continue;
+    }
+
+    uint8_t source = 0;
+    uint16_t uncertaintyMs = 0;
+    int64_t t2 = 0;
+    resp.hubSynced = timeProvider_ != nullptr &&
+                     timeProvider_(rxMonoUs, &t2, &source, &uncertaintyMs, timeProviderUserData_);
+    resp.hubSource = source;
+    resp.hubUncertaintyMs = uncertaintyMs;
+    resp.t2EpochUs = resp.hubSynced ? t2 : 0;
+    uint8_t payload[kEspNowTimeRespLen];
+    // t3 last, right before the send, so the reply's own build time is part
+    // of the turnaround the device subtracts rather than of the path delay.
+    int64_t t3 = 0;
+    if (resp.hubSynced) {
+      timeProvider_(esp_timer_get_time(), &t3, &source, &uncertaintyMs, timeProviderUserData_);
+    }
+    resp.t3EpochUs = t3;
+    encodeEspNowTimeResponse(resp, payload, sizeof(payload));
+    // Single 32 B frame: no pacing concern. On failure the device simply
+    // times out and asks again.
+    if (esp_now_send(slot.mac, payload, sizeof(payload)) == ESP_OK) {
+      ++timeRepliesSent_;
+    }
+  }
+}
+
 void EspNowHubManager::service() {
   // Runs first so a reap that clears the current awaitingIdx_ this same
   // tick is already reflected before the poll-timeout branch below runs.
   reapStaleSlots();
+  // Before polling, so a device's time exchange is not held up behind
+  // another device's data frame.
+  serviceTimeRequests();
 
   if (awaitingIdx_ >= 0) {
     const uint32_t elapsed = micros() - pollSentUs_;

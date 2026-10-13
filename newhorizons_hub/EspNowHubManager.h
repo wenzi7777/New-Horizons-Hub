@@ -20,8 +20,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <freertos/FreeRTOS.h>
 
 #include "EspNowFrame.h"
+#include "EspNowTimeWire.h"
 
 namespace nhos {
 
@@ -114,6 +116,14 @@ class EspNowHubManager {
   using ControlAckCallback = void (*)(const uint8_t mac[6], void* userData);
   void onControlAck(ControlAckCallback callback, void* userData);
 
+  // Serves the device-initiated time exchange (EspNowTimeWire.h): reports
+  // this Hub's wall time at local monotonic `monoUs`, or returns false when
+  // it has none (the reply then says so, and the device keeps waiting).
+  using TimeProvider = bool (*)(int64_t monoUs, int64_t* epochUs, uint8_t* source,
+                                uint16_t* uncertaintyMs, void* userData);
+  void setTimeProvider(TimeProvider provider, void* userData);
+  uint32_t timeRepliesSent() const { return timeRepliesSent_; }
+
   // Call every loop() iteration: drives the poll-advance/timeout state
   // machine and dispatches any completed frame to the registered callback.
   void service();
@@ -201,6 +211,12 @@ class EspNowHubManager {
     uint32_t lastSeenMs = 0;
     uint8_t deviceUid[6] = {0};
     bool deviceUidKnown = false;
+    // A TIME_REQ waiting for serviceTimeRequests(); written by the recv
+    // callback under timeLock_.
+    bool timeReqPending = false;
+    uint8_t timeReqSeq = 0;
+    int64_t timeReqT1Us = 0;
+    int64_t timeReqRxMonoUs = 0;
   };
 
   int findOrCreateSlot(const uint8_t mac[6]);
@@ -208,6 +224,7 @@ class EspNowHubManager {
   void pollNext();
   void sendPollTo(uint8_t idx);
   void reapStaleSlots();
+  void serviceTimeRequests();
 
   DeviceSlot slots_[kEspNowHubMaxDevices];
   uint8_t pollCursor_ = 0;
@@ -224,6 +241,10 @@ class EspNowHubManager {
   void* otaAckCallbackUserData_ = nullptr;
   ControlAckCallback controlAckCallback_ = nullptr;
   void* controlAckCallbackUserData_ = nullptr;
+  TimeProvider timeProvider_ = nullptr;
+  void* timeProviderUserData_ = nullptr;
+  portMUX_TYPE timeLock_ = portMUX_INITIALIZER_UNLOCKED;
+  uint32_t timeRepliesSent_ = 0;
 
   // A completed frame is buffered here (copied out of the reassembler's
   // scratch buffer, which is only valid until that device's next

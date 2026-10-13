@@ -24,6 +24,7 @@
 #include "EspNowHubManager.h"
 #include "EspNowOtaRelay.h"
 #include "HubConfig.h"
+#include "HubClock.h"
 #include "HubConfigPortal.h"
 #include "HubUplinkClient.h"
 #include "JsonUtils.h"
@@ -55,6 +56,7 @@ nhos::EspNowCommandDispatcher commandDispatcher;
 nhos::EspNowOtaRelay otaRelay;
 nhos::OtaManager ota;
 nhos::PowerManager power;
+nhos::HubClock hubClock;
 
 bool portalMode = false;
 bool uplinkStarted = false;
@@ -227,9 +229,36 @@ void serviceQuickBootCounterClear() {
 // scan/migrate/cancel are served by the Backend directly or via the
 // existing per-device command path (see plan section "移除 Hub 常駐
 // WebUI...").
+// --- Hub clock (HubClock.h) -------------------------------------------------
+bool hubTimeProvider(int64_t monoUs, int64_t* epochUs, uint8_t* source, uint16_t* uncertaintyMs,
+                     void* /*userData*/) {
+  *source = static_cast<uint8_t>(hubClock.source());
+  if (!hubClock.synced()) return false;
+  *epochUs = hubClock.epochUsAt(monoUs);
+  const uint32_t ms = hubClock.uncertaintyMsAt(monoUs);
+  *uncertaintyMs = ms > 0xFFFF ? 0xFFFF : static_cast<uint16_t>(ms);
+  return true;
+}
+
+bool hubClockSendPing(void* /*ctx*/) { return uplink.sendPing(); }
+
+void onUplinkPong(int64_t serverTimeMs, int64_t rxMonoUs, void* /*userData*/) {
+  hubClock.onBackendPong(serverTimeMs, rxMonoUs);
+}
+
+String hubClockJson(void* /*userData*/) { return hubClock.statusJson(); }
+
 void handleGatewayCommand(const String& requestId, const String& payloadJson, void* /*userData*/) {
   String command;
   nhos::jsonExtractString(payloadJson, "command", command);
+
+  if (command == "clock_sync") {
+    // Starts the re-sync only; the outcome shows in the next gateway_status
+    // `clock` block rather than holding this reply open.
+    hubClock.requestSync();
+    uplink.sendGatewayCommandResult(requestId, true, "clock_sync_started");
+    return;
+  }
 
   if (command == "set_config") {
     String gatewayId;
@@ -337,6 +366,9 @@ void startUplinkIfReady() {
   // registering against Production with an empty gateway_id in the
   // never-should-happen case that NVS has Wi-Fi creds but no Hub config
   // (e.g. a downgrade from an older firmware version).
+  // Before the uplink guard: the clock is needed even before (or without)
+  // a configured uplink, since paired devices take their time from it.
+  if (wifi.isConnected()) hubClock.beginSntp();
   if (uplinkStarted || !wifi.isConnected() || !hubConfig.isConfigured()) return;
   const nhos::HubConfigData& cfg = hubConfig.data();
   uplink.begin(cfg.targetMode, cfg.manualUrl, cfg.gatewayId, cfg.authToken);
@@ -502,6 +534,10 @@ void setup() {
   otaRelay.begin(&hubManager);
   uplink.onCommand(onUplinkCommand, nullptr);
   uplink.onGatewayCommand(handleGatewayCommand, nullptr);
+  uplink.onPong(onUplinkPong, nullptr);
+  uplink.setClockJsonSource(hubClockJson, nullptr);
+  hubClock.setPingSender(hubClockSendPing, nullptr);
+  hubManager.setTimeProvider(hubTimeProvider, nullptr);
 
   startUplinkIfReady();
 
@@ -535,6 +571,7 @@ void loop() {
 
   wifi.service();
   startUplinkIfReady();
+  hubClock.service(millis());
   hubManager.service();
   commandDispatcher.service();
   otaRelay.service();

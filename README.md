@@ -18,7 +18,7 @@ RAM use) into a no-PSRAM board is unnecessary risk.
 `Config.h`, `BoardConfig.h`, `Storage.h/.cpp`, `WifiManager.h/.cpp`,
 `LedController.h/.cpp`, `BoardPins.h/.cpp`, `EspNowFrame.h/.cpp`,
 `JsonUtils.h/.cpp`, `OtaManager.h/.cpp`, `PowerManager.h/.cpp`,
-`PowerStatusJson.h/.cpp` started as copies of the same files
+`PowerStatusJson.h/.cpp`, `ClockCore.h/.cpp`, `EspNowTimeWire.h/.cpp` started as copies of the same files
 in `NewHorizonsOS-OTA/firmware/newhorizons_os/`. Since this Hub firmware now
 lives in a separate repo from the device firmware, there is no
 build-system or git mechanism keeping them in sync at all — **if you change
@@ -32,6 +32,11 @@ even though the Hub and a device can be the exact same physical board
 Hub-only `UplinkDegraded` value that the device firmware's copy never uses
 — kept in sync anyway rather than forking the enum.)
 
+`ClockCore`, `EspNowTimeWire` and `EspNowFrame` must stay **byte-identical**
+to the device firmware's copies (they define the wire format and clock
+discipline both ends rely on); `tests_native/run_time_service_contract.sh`
+fails if they drift, when `NewHorizonsOS-OTA` is checked out alongside.
+
 ## Hub-specific modules
 
 - `EspNowHubManager.h/.cpp` — ESP-NOW device roster + event-driven polling
@@ -39,12 +44,19 @@ Hub-only `UplinkDegraded` value that the device firmware's copy never uses
   frame-completion-or-timeout, not a fixed schedule). Also extracts each
   device's device_uid from its data frames' header, and separately routes
   `kEspNowFragTypeControl` frames (command responses) to a dedicated
-  callback so they're never mistaken for sensor data.
+  callback so they're never mistaken for sensor data. Also answers devices'
+  ESP-NOW time requests (`0xE8` TIME_REQ → `0xE9` TIME_RESP, see
+  `EspNowTimeWire.h`) from `HubClock`.
+- `HubClock.h/.cpp` — the Hub's wall clock, served to paired devices. SNTP
+  (every 10 min) as soon as Wi-Fi is up; if SNTP is not delivering, the
+  Desktop backend over the uplink (`ping` → `pong.server_time_ms`, timed
+  NTP-style). Its state rides `gateway_status` as `clock`, and the
+  `clock_sync` gateway command re-syncs it on demand.
 - `HubUplinkClient.h/.cpp` — WiFi STA + `WebSocketsClient` (TLS), ports
   `New-Horizons-Gateway/newhorizons_gateway/upstream_wss.py`'s protocol
   behavior to embedded C++, including inbound `{"type":"command",...}`
   parsing (device-targeted) and `{"type":"gateway_command",...}` parsing
-  (Hub-itself-targeted, `set_config`/`factory_reset` only — see "Hub
+  (Hub-itself-targeted, `set_config`/`factory_reset`/`clock_sync` only — see "Hub
   control model" below) plus `sendDeviceMessage()`/
   `sendGatewayCommandResult()` for the respective replies. `gateway_status`
   heartbeat payload also carries `paired_devices` (device_uid/mac/status,
@@ -70,7 +82,7 @@ Hub-only `UplinkDegraded` value that the device firmware's copy never uses
   Wi-Fi credentials aren't set yet (`HubConfigPortal`'s single form writes
   both Wi-Fi and Hub settings together, so this one check gates both);
   otherwise normal operation with no WebServer at all. Also owns
-  `handleGatewayCommand()` (`set_config`/`factory_reset` handlers) and
+  `handleGatewayCommand()` (`set_config`/`factory_reset`/`clock_sync` handlers) and
   `buildPairedDevicesDetailJson()` (the heartbeat's display-only paired
   list, distinct from `buildPairedDevicesJson()`'s Backend-routing list).
 

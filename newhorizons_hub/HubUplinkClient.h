@@ -47,6 +47,12 @@ using HubCommandCallback = void (*)(const String& deviceUid,
 using HubGatewayCommandCallback = void (*)(const String& requestId,
                                             const String& payloadJson, void* userData);
 
+// Backend `pong` carrying server_time_ms; `rxMonoUs` is esp_timer time on
+// receipt (HubClock's backend time source).
+using HubPongCallback = void (*)(int64_t serverTimeMs, int64_t rxMonoUs, void* userData);
+// Builds the `clock` block of gateway_status; only called when one is sent.
+using HubClockJsonFn = String (*)(void* userData);
+
 class HubUplinkClient {
  public:
   // `manualUrl` is only used when mode == Manual. `gatewayId` is this
@@ -128,6 +134,12 @@ class HubUplinkClient {
   // "result":{"ok":...,"message":...}}.
   void sendGatewayCommandResult(const String& requestId, bool ok, const String& message);
 
+  // Application-level `{"type":"ping"}` (the backend answers with `pong`,
+  // unlike the WebSocket library's own ping frames). False if not connected.
+  bool sendPing();
+  void onPong(HubPongCallback callback, void* userData);
+  void setClockJsonSource(HubClockJsonFn fn, void* userData);
+
  private:
   void connectNow();
   void handleWsEvent(WStype_t type, uint8_t* payload, size_t length);
@@ -164,6 +176,11 @@ class HubUplinkClient {
 
   HubGatewayCommandCallback gatewayCommandCallback_ = nullptr;
   void* gatewayCommandCallbackUserData_ = nullptr;
+
+  HubPongCallback pongCallback_ = nullptr;
+  void* pongCallbackUserData_ = nullptr;
+  HubClockJsonFn clockJsonFn_ = nullptr;
+  void* clockJsonUserData_ = nullptr;
 
   static HubUplinkClient* instance_;
 };

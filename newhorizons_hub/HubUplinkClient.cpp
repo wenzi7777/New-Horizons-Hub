@@ -2,6 +2,7 @@
 
 #include <WiFi.h>
 #include <cstring>
+#include <esp_timer.h>
 #include <esp_wifi.h>
 
 #include "Config.h"
@@ -10,6 +11,23 @@
 namespace nhos {
 
 namespace {
+// JsonUtils' integer extractor is 32-bit (`long` on the ESP32); a
+// millisecond epoch needs 64.
+bool extractInt64Field(const String& json, const char* key, int64_t& out) {
+  String needle = "\"";
+  needle += key;
+  needle += "\":";
+  const int at = json.indexOf(needle);
+  if (at < 0) return false;
+  const char* start = json.c_str() + at + needle.length();
+  while (*start == ' ') ++start;
+  char* end = nullptr;
+  const long long value = strtoll(start, &end, 10);
+  if (end == start) return false;
+  out = static_cast<int64_t>(value);
+  return true;
+}
+
 // Mirrors New-Horizons-Gateway/newhorizons_gateway/config_store.py exactly.
 constexpr char kProductionHost[] = "isensing-s1.u-aizu.ac.jp";
 constexpr uint16_t kProductionPort = 443;
@@ -202,6 +220,19 @@ void HubUplinkClient::handleWsEvent(WStype_t type, uint8_t* payload, size_t leng
         break;
       }
 
+      if (msgType == "pong") {
+        // Stamped before any parsing: the parse is local turnaround, not
+        // path delay.
+        const int64_t rxMonoUs = esp_timer_get_time();
+        int64_t serverTimeMs = 0;
+        // Older backends send only an ISO `server_time`; without the
+        // integer field there is nothing precise to sync to.
+        if (pongCallback_ != nullptr && extractInt64Field(message, "server_time_ms", serverTimeMs)) {
+          pongCallback_(serverTimeMs, rxMonoUs, pongCallbackUserData_);
+        }
+        break;
+      }
+
       if (msgType == "gateway_command" && gatewayCommandCallback_ != nullptr) {
         // {"type":"gateway_command","request_id":...,"payload":{...}} --
         // targets this Hub process itself, no device_uid involved.
@@ -218,6 +249,22 @@ void HubUplinkClient::handleWsEvent(WStype_t type, uint8_t* payload, size_t leng
     default:
       break;
   }
+}
+
+bool HubUplinkClient::sendPing() {
+  if (!connected_ || !helloSent_) return false;
+  String ping = "{\"type\":\"ping\"}";
+  return webSocket_.sendTXT(ping);
+}
+
+void HubUplinkClient::onPong(HubPongCallback callback, void* userData) {
+  pongCallback_ = callback;
+  pongCallbackUserData_ = userData;
+}
+
+void HubUplinkClient::setClockJsonSource(HubClockJsonFn fn, void* userData) {
+  clockJsonFn_ = fn;
+  clockJsonUserData_ = userData;
 }
 
 void HubUplinkClient::onCommand(HubCommandCallback callback, void* userData) {
@@ -359,6 +406,9 @@ void HubUplinkClient::service() {
     jsonStringField(payload, "target_mode", targetModeToString(targetMode_), payloadFirst);
     if (targetMode_ == UplinkTargetMode::Manual) {
       jsonStringField(payload, "server_url", manualUrl_, payloadFirst);
+    }
+    if (clockJsonFn_ != nullptr) {
+      jsonRawField(payload, "clock", clockJsonFn_(clockJsonUserData_), payloadFirst);
     }
     payload += "}";
 

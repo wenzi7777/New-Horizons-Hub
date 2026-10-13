@@ -19,7 +19,7 @@ static constexpr char kProtocolName[] = "NHO/Arduino/1";
 static constexpr char kHardwareModel[] = NHOS_BOARD_NAME " (Hub)";
 // The pre-rename name OTA manifests still carry (see BoardConfig.h).
 static constexpr char kOtaManifestModel[] = NHOS_BOARD_OTA_MODEL " (Hub)";
-static constexpr char kFirmwareVersion[] = "v0.6.0";
+static constexpr char kFirmwareVersion[] = "v0.7.0";
 
 static constexpr uint16_t kRows = NHOS_BOARD_ROWS;
 static constexpr uint16_t kCols = NHOS_BOARD_COLS;
@@ -49,7 +49,6 @@ static constexpr size_t kMaxPacketBytes =
     4 +
     kPacketHmacLen;
 static constexpr uint32_t kHeartbeatIntervalMs = 5000;
-static constexpr uint32_t kTimeSyncValidEpochS = 1600000000;  // ~2020-09-13; time() below this means "not yet synced"
 
 static constexpr uint16_t kDefaultTargetFps = 60;
 static constexpr uint16_t kMaxTargetFps = 120;
