@@ -248,6 +248,44 @@ void onUplinkPong(int64_t serverTimeMs, int64_t rxMonoUs, void* /*userData*/) {
 
 String hubClockJson(void* /*userData*/) { return hubClock.statusJson(); }
 
+// --- Hub firmware update from the Desktop (check_update / apply_update) ------
+// apply_update is acknowledged first and run from loop() afterwards: the
+// download blocks for tens of seconds and drops the uplink, so the reply
+// could not be sent once it starts. The outcome then shows up as the
+// `update` block of the next gateway_status (or as the new version after
+// the restart).
+bool pendingApplyUpdate = false;
+uint32_t pendingApplyUpdateAtMs = 0;
+
+String hubUpdateJson(void* /*userData*/) { return ota.lastStatusJson(); }
+
+String hubUpdateResultFields() {
+  String fields = "\"current_version\":\"";
+  fields += nhos::kFirmwareVersion;
+  fields += "\",\"update\":";
+  fields += ota.lastStatusJson();
+  return fields;
+}
+
+void serviceRequestedUpdate() {
+  // A short grace so the acknowledgement actually leaves before the blocking
+  // download starts.
+  if (!pendingApplyUpdate || millis() - pendingApplyUpdateAtMs < 500) return;
+  pendingApplyUpdate = false;
+  leds.setSignal(nhos::LedSignal::OtaActive);
+  leds.service(millis());
+  if (ota.applyUpdate(kHubUpdateManifestUrl)) {
+    leds.showEvent(nhos::LedSignal::OtaSuccess);
+    leds.service(millis());
+    delay(100);
+    ESP.restart();
+  }
+  Serial.print(F("[hub] requested_ota_failed status="));
+  Serial.println(ota.lastStatusJson());
+  leds.showEvent(nhos::LedSignal::OtaError);
+  leds.service(millis());
+}
+
 void handleGatewayCommand(const String& requestId, const String& payloadJson, void* /*userData*/) {
   String command;
   nhos::jsonExtractString(payloadJson, "command", command);
@@ -277,6 +315,22 @@ void handleGatewayCommand(const String& requestId, const String& payloadJson, vo
     uplink.sendGatewayCommandResult(requestId, true, "Applied, rebooting");
     delay(200);
     ESP.restart();
+    return;
+  }
+
+  if (command == "check_update") {
+    const nhos::UpdateInfo info = ota.checkUpdate(kHubUpdateManifestUrl);
+    const char* message = !info.error.isEmpty() ? "update_check_failed"
+                          : info.available      ? "update_available"
+                                                : "up_to_date";
+    uplink.sendGatewayCommandResult(requestId, info.error.isEmpty(), message, hubUpdateResultFields());
+    return;
+  }
+
+  if (command == "apply_update") {
+    pendingApplyUpdate = true;
+    pendingApplyUpdateAtMs = millis();
+    uplink.sendGatewayCommandResult(requestId, true, "update_started", hubUpdateResultFields());
     return;
   }
 
@@ -310,7 +364,9 @@ String buildPairedDevicesJson() {
     bool first = true;
     out += "{";
     nhos::jsonStringField(out, "device_uid", String(uidBuf), first);
-    nhos::jsonBoolField(out, "connected", true, first);
+    // Reported disconnected (rather than simply dropped once reaped) when the
+    // device has gone quiet, so the Backend sees the change like a Gateway's.
+    nhos::jsonBoolField(out, "connected", millis() - info.lastSeenMs <= nhos::kEspNowHubDeviceLiveMs, first);
     out += "}";
   }
   out += "]";
@@ -375,8 +431,9 @@ void startUplinkIfReady() {
   uplinkStarted = true;
 }
 
-// Boot-time only, mirrors newhorizons_os.ino's serviceAutoOta() -- no
-// manual trigger from the Desktop UI for v1 (see the plan). Unlike the
+// Boot-time check, mirrors newhorizons_os.ino's serviceAutoOta(). The
+// Desktop can also check/apply on demand (check_update / apply_update in
+// handleGatewayCommand()). Unlike the
 // device side there's no per-unit "autoApplyOnBoot" config flag to check first:
 // a Hub has no matrix/IMU workload to interrupt, so checking on every boot
 // is unconditional whenever WiFi is up and we're not sitting in the setup
@@ -536,6 +593,7 @@ void setup() {
   uplink.onGatewayCommand(handleGatewayCommand, nullptr);
   uplink.onPong(onUplinkPong, nullptr);
   uplink.setClockJsonSource(hubClockJson, nullptr);
+  uplink.setUpdateJsonSource(hubUpdateJson, nullptr);
   hubClock.setPingSender(hubClockSendPing, nullptr);
   hubManager.setTimeProvider(hubTimeProvider, nullptr);
 
@@ -578,6 +636,7 @@ void loop() {
   uplink.service();
   uplink.sendGatewayStatus(hubManager.registeredCount(), buildPairedDevicesJson(),
                             buildPairedDevicesDetailJson());
+  serviceRequestedUpdate();
   power.service(millis());
   updateRuntimeLed();
   leds.service(millis());

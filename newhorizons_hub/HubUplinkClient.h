@@ -133,12 +133,18 @@ class HubUplinkClient {
   // without a device_uid: {"type":"gateway_command_result","request_id":...,
   // "result":{"ok":...,"message":...}}.
   void sendGatewayCommandResult(const String& requestId, bool ok, const String& message);
+  // Same, with extra raw JSON fields merged into the result object
+  // (`extraFields` is "\"key\":value,..." without braces).
+  void sendGatewayCommandResult(const String& requestId, bool ok, const String& message,
+                                const String& extraFields);
 
   // Application-level `{"type":"ping"}` (the backend answers with `pong`,
   // unlike the WebSocket library's own ping frames). False if not connected.
   bool sendPing();
   void onPong(HubPongCallback callback, void* userData);
   void setClockJsonSource(HubClockJsonFn fn, void* userData);
+  // The `update` block of gateway_status (OtaManager::lastStatusJson()).
+  void setUpdateJsonSource(HubClockJsonFn fn, void* userData);
 
  private:
   void connectNow();
@@ -181,6 +187,8 @@ class HubUplinkClient {
   void* pongCallbackUserData_ = nullptr;
   HubClockJsonFn clockJsonFn_ = nullptr;
   void* clockJsonUserData_ = nullptr;
+  HubClockJsonFn updateJsonFn_ = nullptr;
+  void* updateJsonUserData_ = nullptr;
 
   static HubUplinkClient* instance_;
 };

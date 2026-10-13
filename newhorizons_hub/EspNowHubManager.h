@@ -75,6 +75,12 @@ constexpr uint32_t kHubPollTimeoutUs = 30000;  // 30ms
 // also references this instead of keeping its own separate constant.
 constexpr uint32_t kEspNowHubSlotStaleMs = 30000;
 
+// A paired device sends HELLO every 6 s (kEspNowHelloRetryMs * 4 on the
+// device side) plus data frames while streaming. Silent for longer than
+// this, it is reported to the Backend as disconnected -- explicitly, the
+// way a Gateway does -- until its slot is reaped at kEspNowHubSlotStaleMs.
+constexpr uint32_t kEspNowHubDeviceLiveMs = 15000;
+
 using HubFrameCallback = void (*)(uint8_t deviceIndex, const uint8_t mac[6],
                                    const uint8_t* data, size_t len,
                                    void* userData);

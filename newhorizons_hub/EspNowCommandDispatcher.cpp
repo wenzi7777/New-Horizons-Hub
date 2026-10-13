@@ -123,6 +123,9 @@ void EspNowCommandDispatcher::rejectImmediately(const String& deviceUid, const S
   jsonStringField(result, "command", command, first);
   jsonStringField(result, "status", "error", first);
   jsonStringField(result, "message", message, first);
+  // Generated here, not by the device: no evidence the device is alive, so
+  // the Backend must not refresh its online status from it.
+  jsonBoolField(result, "live_seen", false, first);
   result += "}";
   uplink_->sendDeviceMessage("result", deviceUid, result);
 }

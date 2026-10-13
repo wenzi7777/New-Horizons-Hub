@@ -56,13 +56,21 @@ fails if they drift, when `NewHorizonsOS-OTA` is checked out alongside.
   `New-Horizons-Gateway/newhorizons_gateway/upstream_wss.py`'s protocol
   behavior to embedded C++, including inbound `{"type":"command",...}`
   parsing (device-targeted) and `{"type":"gateway_command",...}` parsing
-  (Hub-itself-targeted, `set_config`/`factory_reset`/`clock_sync` only — see "Hub
+  (Hub-itself-targeted, `set_config`/`factory_reset`/`clock_sync`/`check_update`/`apply_update` only — see "Hub
   control model" below) plus `sendDeviceMessage()`/
   `sendGatewayCommandResult()` for the respective replies. `gateway_status`
   heartbeat payload also carries `paired_devices` (device_uid/mac/status,
   30s staleness-filtered) and `target_mode`/`server_url` (so the Desktop
   UI's Manage Hub panel can show/pre-fill this Hub's actual current
   settings, not just whatever it was last told) for the Desktop UI.
+  Each routed device's `connected` reflects whether the Hub has heard from
+  it in the last 15 s (`kEspNowHubDeviceLiveMs`; a paired device HELLOs
+  every 6 s), so a device that goes quiet is reported disconnected the way
+  a Gateway reports one, instead of silently dropping out after 30 s.
+  Failures the Hub reports on a device's behalf (`command_delivery_timeout`
+  and friends) carry `"live_seen": false`. The heartbeat also carries an
+  `update` block (`OtaManager::lastStatusJson()`) for the Desktop's Hub
+  update page, which drives `check_update` / `apply_update`.
 - `EspNowCommandDispatcher.h/.cpp` — Hub-side half of the reverse command
   channel: fragments/resends a backend command to a device over ESP-NOW
   until a response arrives or the retry budget is exhausted, ports
@@ -82,7 +90,7 @@ fails if they drift, when `NewHorizonsOS-OTA` is checked out alongside.
   Wi-Fi credentials aren't set yet (`HubConfigPortal`'s single form writes
   both Wi-Fi and Hub settings together, so this one check gates both);
   otherwise normal operation with no WebServer at all. Also owns
-  `handleGatewayCommand()` (`set_config`/`factory_reset`/`clock_sync` handlers) and
+  `handleGatewayCommand()` (`set_config`/`factory_reset`/`clock_sync`/`check_update`/`apply_update` handlers) and
   `buildPairedDevicesDetailJson()` (the heartbeat's display-only paired
   list, distinct from `buildPairedDevicesJson()`'s Backend-routing list).
 

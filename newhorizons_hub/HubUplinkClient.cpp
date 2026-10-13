@@ -267,6 +267,11 @@ void HubUplinkClient::setClockJsonSource(HubClockJsonFn fn, void* userData) {
   clockJsonUserData_ = userData;
 }
 
+void HubUplinkClient::setUpdateJsonSource(HubClockJsonFn fn, void* userData) {
+  updateJsonFn_ = fn;
+  updateJsonUserData_ = userData;
+}
+
 void HubUplinkClient::onCommand(HubCommandCallback callback, void* userData) {
   commandCallback_ = callback;
   commandCallbackUserData_ = userData;
@@ -329,11 +334,20 @@ void HubUplinkClient::onGatewayCommand(HubGatewayCommandCallback callback, void*
 
 void HubUplinkClient::sendGatewayCommandResult(const String& requestId, bool ok,
                                                 const String& message) {
+  sendGatewayCommandResult(requestId, ok, message, String());
+}
+
+void HubUplinkClient::sendGatewayCommandResult(const String& requestId, bool ok,
+                                                const String& message, const String& extraFields) {
   if (!connected_ || !helloSent_) return;
   String result = "{";
   bool resultFirst = true;
   jsonBoolField(result, "ok", ok, resultFirst);
   jsonStringField(result, "message", message, resultFirst);
+  if (!extraFields.isEmpty()) {
+    result += ",";
+    result += extraFields;
+  }
   result += "}";
 
   String out = "{";
@@ -409,6 +423,9 @@ void HubUplinkClient::service() {
     }
     if (clockJsonFn_ != nullptr) {
       jsonRawField(payload, "clock", clockJsonFn_(clockJsonUserData_), payloadFirst);
+    }
+    if (updateJsonFn_ != nullptr) {
+      jsonRawField(payload, "update", updateJsonFn_(updateJsonUserData_), payloadFirst);
     }
     payload += "}";
 
