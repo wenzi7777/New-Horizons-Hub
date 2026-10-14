@@ -16,6 +16,7 @@
 
 #include "HubUplinkClient.h"
 #include "Storage.h"
+#include "UpdateChannel.h"
 
 namespace nhos {
 
@@ -24,6 +25,10 @@ struct HubConfigData {
   UplinkTargetMode targetMode = UplinkTargetMode::Production;
   String manualUrl;
   String authToken;
+  // Hub firmware update channel, "stable" (default) or "beta" -- see
+  // UpdateChannel.h. Set from the Desktop (set_update_channel), not the
+  // setup portal: a fresh Hub always starts on stable.
+  String updateChannel = kUpdateChannelStable;
 };
 
 class HubConfig {
@@ -48,6 +53,10 @@ class HubConfig {
   // GATEWAY_ID_PATTERN exactly (^[A-Za-z0-9._-]{1,64}$) so a Hub's
   // gateway_id is always acceptable to the same backend a Gateway talks
   // to.
+  // Persists the update channel on its own (no reboot needed: the next
+  // check_update / boot check reads it). False for an unknown channel.
+  bool setUpdateChannel(Storage& storage, const String& channel);
+
   static bool validGatewayId(const String& id);
   static bool parseTargetMode(const String& value, UplinkTargetMode& out);
   static String targetModeToString(UplinkTargetMode mode);

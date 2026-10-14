@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds and runs the Hub's ESP-NOW time service contract test, and checks
-# the files shared with the device firmware are still byte-identical.
+# the files shared with the device firmware are still byte-identical
+# (the ones that are meant to be; README "Shared files" lists the rest).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,7 +11,9 @@ OUTPUT="$(mktemp "${TMPDIR:-/tmp}/nhos-hub-time.XXXXXX")"
 trap 'rm -f "$OUTPUT"' EXIT
 
 if [ -d "$DEVICE_DIR" ]; then
-  for f in ClockCore.h ClockCore.cpp EspNowTimeWire.h EspNowTimeWire.cpp EspNowFrame.h EspNowFrame.cpp; do
+  for f in ClockCore.h ClockCore.cpp EspNowTimeWire.h EspNowTimeWire.cpp EspNowFrame.h EspNowFrame.cpp \
+           VersionCompare.h VersionCompare.cpp UpdateChannel.h \
+           JsonUtils.h JsonUtils.cpp PowerStatusJson.h PowerStatusJson.cpp OtaManager.h OtaTls.h; do
     if ! cmp -s "$HUB_DIR/$f" "$DEVICE_DIR/$f"; then
       echo "shared file out of sync with NewHorizonsOS-OTA: $f" >&2
       exit 1

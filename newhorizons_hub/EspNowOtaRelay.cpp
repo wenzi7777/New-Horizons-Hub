@@ -5,6 +5,7 @@
 #include <esp_now.h>
 
 #include "JsonUtils.h"
+#include "OtaTls.h"
 
 namespace nhos {
 
@@ -31,7 +32,7 @@ void EspNowOtaRelay::handleFetchManifestRequest(const uint8_t mac[6], const Stri
   // EspNowHubManager::service()'s deferred hub-request dispatch (main
   // loop context), not the raw recv callback.
   WiFiClientSecure client;
-  client.setInsecure();
+  nhos::trustPublicCertificateAuthorities(client);
   HTTPClient http;
   http.setTimeout(8000);
   http.setConnectTimeout(6000);
@@ -88,7 +89,7 @@ void EspNowOtaRelay::handleRelayStartRequest(const uint8_t mac[6], const String&
   }
 
   client_.stop();
-  client_.setInsecure();
+  nhos::trustPublicCertificateAuthorities(client_);
   http_.setTimeout(12000);
   http_.setConnectTimeout(12000);
   http_.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);

@@ -1,6 +1,10 @@
 #include "HubConfig.h"
 
 namespace nhos {
+namespace {
+// NVS keys are capped at 15 characters.
+constexpr char kUpdateChannelKey[] = "hub_update_ch";
+}  // namespace
 
 void HubConfig::load(Storage& storage) {
   data_.gatewayId = storage.getString("hub_gateway_id", "");
@@ -9,6 +13,17 @@ void HubConfig::load(Storage& storage) {
   data_.targetMode = mode;
   data_.manualUrl = storage.getString("hub_manual_url", "");
   data_.authToken = storage.getString("hub_auth_token", "");
+  const String channel = storage.getString(kUpdateChannelKey, kUpdateChannelStable);
+  data_.updateChannel = isValidUpdateChannel(channel.c_str()) ? channel : String(kUpdateChannelStable);
+}
+
+bool HubConfig::setUpdateChannel(Storage& storage, const String& channel) {
+  if (!isValidUpdateChannel(channel.c_str())) {
+    return false;
+  }
+  storage.putString(kUpdateChannelKey, channel);
+  data_.updateChannel = channel;
+  return true;
 }
 
 bool HubConfig::apply(Storage& storage, const String& gatewayId, const String& targetModeStr,

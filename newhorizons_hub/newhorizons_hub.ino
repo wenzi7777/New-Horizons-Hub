@@ -42,8 +42,11 @@ namespace {
 // kHardwareModel comment for how OtaManager::parseManifest()'s
 // model_mismatch check guards against ever applying the wrong one even if
 // this URL is misconfigured.
-constexpr char kHubUpdateManifestUrl[] =
-    "https://raw.githubusercontent.com/wenzi7777/New-Horizons-Hub/main/releases/hub-gcu-v23d-lts-latest.json";
+//
+// Without a suffix: the Hub's update channel (HubConfig::updateChannel)
+// adds "-latest.json" (stable) or "-beta.json" (beta), see UpdateChannel.h.
+constexpr char kHubUpdateManifestBase[] =
+    "https://raw.githubusercontent.com/wenzi7777/New-Horizons-Hub/main/releases/hub-gcu-v23d-lts";
 
 nhos::Storage storage;
 nhos::WifiManager wifi;
@@ -193,6 +196,8 @@ void performFactoryReset() {
   storage.putString("hub_target_mode", "");
   storage.putString("hub_manual_url", "");
   storage.putString("hub_auth_token", "");
+  // Back to the stable channel too: a reset Hub should be a fresh Hub.
+  hubConfig.setUpdateChannel(storage, nhos::kUpdateChannelStable);
 }
 
 // Must run before anything else in setup() touches kQuickBootCountKey.
@@ -257,13 +262,34 @@ String hubClockJson(void* /*userData*/) { return hubClock.statusJson(); }
 bool pendingApplyUpdate = false;
 uint32_t pendingApplyUpdateAtMs = 0;
 
-String hubUpdateJson(void* /*userData*/) { return ota.lastStatusJson(); }
+String hubManifestUrl() {
+  return String(kHubUpdateManifestBase) +
+         nhos::updateChannelManifestSuffix(hubConfig.data().updateChannel.c_str());
+}
+
+// OtaManager's own status plus the channel it is following, so the Desktop
+// can show which one a Hub is on from the gateway_status heartbeat alone.
+String hubUpdateJson(void* /*userData*/) {
+  const String status = ota.lastStatusJson();
+  String out = "{\"channel\":\"";
+  out += hubConfig.data().updateChannel;
+  out += "\",\"resolved_manifest_url\":\"";
+  out += hubManifestUrl();
+  out += "\"";
+  if (status.length() > 2) {
+    out += ",";
+    out += status.substring(1);
+  } else {
+    out += "}";
+  }
+  return out;
+}
 
 String hubUpdateResultFields() {
   String fields = "\"current_version\":\"";
   fields += nhos::kFirmwareVersion;
   fields += "\",\"update\":";
-  fields += ota.lastStatusJson();
+  fields += hubUpdateJson(nullptr);
   return fields;
 }
 
@@ -274,7 +300,7 @@ void serviceRequestedUpdate() {
   pendingApplyUpdate = false;
   leds.setSignal(nhos::LedSignal::OtaActive);
   leds.service(millis());
-  if (ota.applyUpdate(kHubUpdateManifestUrl)) {
+  if (ota.applyUpdate(hubManifestUrl())) {
     leds.showEvent(nhos::LedSignal::OtaSuccess);
     leds.service(millis());
     delay(100);
@@ -319,11 +345,25 @@ void handleGatewayCommand(const String& requestId, const String& payloadJson, vo
   }
 
   if (command == "check_update") {
-    const nhos::UpdateInfo info = ota.checkUpdate(kHubUpdateManifestUrl);
+    const nhos::UpdateInfo info = ota.checkUpdate(hubManifestUrl());
     const char* message = !info.error.isEmpty() ? "update_check_failed"
                           : info.available      ? "update_available"
                                                 : "up_to_date";
     uplink.sendGatewayCommandResult(requestId, info.error.isEmpty(), message, hubUpdateResultFields());
+    return;
+  }
+
+  if (command == "set_update_channel") {
+    String channel;
+    nhos::jsonExtractString(payloadJson, "channel", channel);
+    if (!hubConfig.setUpdateChannel(storage, channel)) {
+      uplink.sendGatewayCommandResult(requestId, false, "invalid_update_channel");
+      return;
+    }
+    // No reboot: the next check_update (or boot) reads the new channel.
+    // Leaving beta never downgrades -- a newer beta stays until stable
+    // overtakes it (VersionCompare.h).
+    uplink.sendGatewayCommandResult(requestId, true, "update_channel_set", hubUpdateResultFields());
     return;
   }
 
@@ -442,7 +482,7 @@ void serviceAutoOta() {
   Serial.println(F("[hub] auto_ota_enabled"));
   leds.setSignal(nhos::LedSignal::OtaActive);
   leds.service(millis());
-  const bool applied = ota.autoApplyIfNewer(kHubUpdateManifestUrl);
+  const bool applied = ota.autoApplyIfNewer(hubManifestUrl());
   if (!applied) {
     if (ota.lastPhase() == "current") {
       Serial.println(F("[hub] auto_ota_no_update"));

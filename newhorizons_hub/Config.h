@@ -19,7 +19,7 @@ static constexpr char kProtocolName[] = "NHO/Arduino/1";
 static constexpr char kHardwareModel[] = NHOS_BOARD_NAME " (Hub)";
 // The pre-rename name OTA manifests still carry (see BoardConfig.h).
 static constexpr char kOtaManifestModel[] = NHOS_BOARD_OTA_MODEL " (Hub)";
-static constexpr char kFirmwareVersion[] = "v0.8.1";
+static constexpr char kFirmwareVersion[] = "v0.9.0";
 
 static constexpr uint16_t kRows = NHOS_BOARD_ROWS;
 static constexpr uint16_t kCols = NHOS_BOARD_COLS;
@@ -31,7 +31,9 @@ static constexpr uint16_t kDiscoveryPort = 22346;
 static constexpr uint16_t kControlPort = 22345;
 
 static constexpr uint16_t kPacketMagic = 0xA55A;
-static constexpr uint8_t kPacketVersion = 4;
+// No kPacketVersion: the Hub relays device packets opaquely (it reads only
+// the UID at offset 4), so a version constant here could only go stale --
+// it once said 4 while devices sent v5.
 static constexpr uint8_t kPacketFlagImu = 0x01;
 static constexpr uint8_t kPacketFlagBattery = 0x02;
 static constexpr uint8_t kPacketFlagMag = 0x04;

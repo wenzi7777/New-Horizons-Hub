@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: New-Horizons-Hub
+      # The shared-file and version contracts compare against the device
+      # firmware checked out beside this repo; without it they skip.
+      - uses: actions/checkout@v4
+        with:
+          repository: wenzi7777/New-Horizons-OS
+          path: NewHorizonsOS-OTA
+      - name: Contract tests
+        working-directory: New-Horizons-Hub
+        run: |
+          for script in tests_native/run_*.sh; do
+            echo "== $script"
+            bash "$script"
+          done
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.arduino15
+          key: arduino15-esp32-3.3.11-hub-${{ runner.os }}
+      - name: Install core and libraries
+        run: |
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.11 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli lib install "WebSockets@2.7.2"
+      - name: Compile
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:FlashSize=4M,PartitionScheme=min_spiffs \
+            --build-path "${{ runner.temp }}/build" \
+            --build-property "compiler.cpp.extra_flags=-DNHOS_BOARD_GCU_V23D_LTS" \
+            newhorizons_hub

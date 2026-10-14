@@ -27,7 +27,11 @@ bool Storage::begin() {
   prefs_.begin("nhos", false);
   mounted_ = SPIFFS.begin(false);
   if (!mounted_) {
-    const bool firstBootFormatAllowed = !prefs_.getBool("spiffs_initialized", false);
+    // "spiffs_init", not the original "spiffs_initialized": NVS keys cap at
+    // 15 characters, so that write always failed (KEY_TOO_LONG), the flag was
+    // never set, and every mount failure was treated as a first boot --
+    // formatting away calibration and apps instead of reporting mount_failed.
+    const bool firstBootFormatAllowed = !prefs_.getBool("spiffs_init", false);
     if (!firstBootFormatAllowed || !SPIFFS.begin(true)) {
       mountError_ = firstBootFormatAllowed ? "mount_format_failed" : "mount_failed";
       return false;
@@ -35,7 +39,7 @@ bool Storage::begin() {
     mounted_ = true;
     formattedOnBoot_ = true;
   }
-  prefs_.putBool("spiffs_initialized", true);
+  prefs_.putBool("spiffs_init", true);
   return ensureDirs();
 }
 

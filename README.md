@@ -18,7 +18,9 @@ RAM use) into a no-PSRAM board is unnecessary risk.
 `Config.h`, `BoardConfig.h`, `Storage.h/.cpp`, `WifiManager.h/.cpp`,
 `LedController.h/.cpp`, `BoardPins.h/.cpp`, `EspNowFrame.h/.cpp`,
 `JsonUtils.h/.cpp`, `OtaManager.h/.cpp`, `PowerManager.h/.cpp`,
-`PowerStatusJson.h/.cpp`, `ClockCore.h/.cpp`, `EspNowTimeWire.h/.cpp` started as copies of the same files
+`PowerStatusJson.h/.cpp`, `ClockCore.h/.cpp`, `EspNowTimeWire.h/.cpp`,
+`VersionCompare.h/.cpp`, `UpdateChannel.h`, `OtaTls.h` (and
+`scripts/generate_arduino_manifest.py`) started as copies of the same files
 in `NewHorizonsOS-OTA/firmware/newhorizons_os/`. Since this Hub firmware now
 lives in a separate repo from the device firmware, there is no
 build-system or git mechanism keeping them in sync at all — **if you change
@@ -32,10 +34,14 @@ even though the Hub and a device can be the exact same physical board
 Hub-only `UplinkDegraded` value that the device firmware's copy never uses
 — kept in sync anyway rather than forking the enum.)
 
-`ClockCore`, `EspNowTimeWire` and `EspNowFrame` must stay **byte-identical**
-to the device firmware's copies (they define the wire format and clock
-discipline both ends rely on); `tests_native/run_time_service_contract.sh`
-fails if they drift, when `NewHorizonsOS-OTA` is checked out alongside.
+`ClockCore`, `EspNowTimeWire`, `EspNowFrame`, `VersionCompare`,
+`UpdateChannel`, `JsonUtils`, `PowerStatusJson`, `OtaManager.h` and `OtaTls.h` must stay
+**byte-identical** to the device firmware's copies
+(they define the wire format, clock discipline and update-version order both
+ends rely on); `tests_native/run_time_service_contract.sh` fails if they
+drift, and `tests_native/run_version_contract.sh` checks the version order
+against `NewHorizonsOS-OTA/spec/fixtures/versions.json`, when
+`NewHorizonsOS-OTA` is checked out alongside.
 
 ## Hub-specific modules
 
@@ -213,7 +219,7 @@ SoftAP, which needs no Backend at all).
 ```bash
 arduino-cli compile \
   --fqbn "esp32:esp32:esp32s3:FlashSize=4M,PartitionScheme=min_spiffs" \
-  --build-property "build.extra_flags=-DNHOS_BOARD_GCU_V23D_LTS -DESP32=ESP32" \
+  --build-property "compiler.cpp.extra_flags=-DNHOS_BOARD_GCU_V23D_LTS" \
   newhorizons_hub
 ```
 
@@ -227,11 +233,9 @@ scripts/flash_firmware.sh /dev/cu.usbserial-10
 Requires the `WebSockets` library (Links2004/arduinoWebSockets):
 `arduino-cli lib install WebSockets`.
 
-**Note on `-DESP32=ESP32`**: the `--build-property "build.extra_flags=..."`
-pattern *replaces* the esp32 platform's own default `build.extra_flags`
-rather than appending to it — which normally includes `-DESP32=ESP32` among
-other defines. Nothing else in this sketch checks the bare `ESP32` macro
-(only `ARDUINO_ARCH_ESP32`, which is unaffected), but the `WebSockets`
-library's network-type auto-detection does check `defined(ESP32)`
-specifically, so it's added back explicitly here. Worth knowing if you add
-another library with the same expectation.
+**Note on build flags**: pass the board define through
+`compiler.cpp.extra_flags`, never `build.extra_flags`. The latter holds the
+esp32 platform's own defines (`-DESP32=ESP32`, USB mode, debug level, ...)
+and a `--build-property` *replaces* it rather than appending. Builds before
+v0.9.0 did exactly that and had to add `-DESP32=ESP32` back by hand because
+the `WebSockets` library's network auto-detection checks `defined(ESP32)`.

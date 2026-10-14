@@ -26,6 +26,22 @@ directly at `releases/hub-gcu-v23d-lts-latest.json` on this branch.
   this field, mechanically copied from the device firmware's own
   `OtaManager.cpp`.
 
+## Update channels (stable / beta)
+
+A Hub follows `stable` (`hub-gcu-v23d-lts-latest.json`) unless switched to
+`beta` (`hub-gcu-v23d-lts-beta.json`) from the Desktop's Manage Hub panel
+(`set_update_channel`). Beta versions carry a prerelease suffix
+(`v0.9.1-beta.1`) and sort below their release; leaving beta never
+downgrades. A factory reset puts the Hub back on stable.
+
+```bash
+CHANNEL=beta VERSION=v0.9.1-beta.1 scripts/build_release.sh   # only -beta.json
+VERSION=v0.9.1 scripts/build_release.sh                      # -latest.json (+ -beta.json)
+```
+
+`-latest.json` is all a Hub older than v0.9.0 reads, so it never carries a
+prerelease (the generator refuses).
+
 ## Cutting a release
 
 ```bash
