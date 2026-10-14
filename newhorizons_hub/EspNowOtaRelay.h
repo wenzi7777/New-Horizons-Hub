@@ -13,8 +13,10 @@
 // kResendIntervalMs/kMaxAttempts retry model).
 //
 // Deliberately global-single-session, not per-device: only one device's
-// relay may be active Hub-wide at a time (a second request while one is in
-// progress gets an immediate "relay_already_active" rejection). This
+// relay may be active Hub-wide at a time (another device's request while one
+// is in progress gets an immediate "relay_already_active" rejection; the
+// same device asking again gets its start reply repeated, or a fresh session
+// if it rebooted mid-transfer -- see handleRelayStartRequest()). This
 // bounds the Hub's extra resource cost (one HTTP connection, one
 // in-flight chunk buffer, one ack-timing loop) to a fixed constant
 // regardless of how many of the roster's devices need updating -- the
@@ -103,7 +105,7 @@ class EspNowOtaRelay {
 
   bool active_ = false;
   uint8_t targetMac_[6] = {0};
-  String sourceUrl_;  // for logging only
+  String sourceUrl_;  // tells a resent start request from a new one
 
   WiFiClientSecure client_;
   HTTPClient http_;

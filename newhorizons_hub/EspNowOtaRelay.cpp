@@ -73,6 +73,27 @@ void EspNowOtaRelay::handleRelayStartRequest(const uint8_t mac[6], const String&
   bool first = true;
   jsonStringField(result, "hub_req", "ota_relay_start", first);
 
+  if (active_ && memcmp(mac, targetMac_, 6) == 0) {
+    if (url == sourceUrl_ && currentChunkIndex_ == 0 && !ackPendingAdvance_) {
+      // A resend of the request this session answered: the device retries
+      // every 800 ms and the HTTPS setup above blocks this loop for longer,
+      // so its repeats queue up behind the first. If our start reply was
+      // lost it is still waiting for one; answering relay_already_active
+      // failed the update. Repeat the reply -- a device already relaying
+      // ignores it.
+      jsonBoolField(result, "ok", true, first);
+      jsonUnsignedField(result, "total_chunks", totalChunks_, first);
+      jsonUnsignedField(result, "chunk_size", static_cast<unsigned long>(kOtaChunkPayloadBytes), first);
+      result += "}";
+      sendHubRequestReply(mac, result);
+      return;
+    }
+    // Past the first chunk (or another file), the same device asking again
+    // means it rebooted mid-transfer (its auto-update on boot): it will take
+    // none of this session's chunks, which would hold the Hub for a chunk
+    // timeout and refuse it meanwhile. Start over for it.
+    finishSession("restarted_by_device");
+  }
   if (active_) {
     jsonBoolField(result, "ok", false, first);
     jsonStringField(result, "error", "relay_already_active", first);
