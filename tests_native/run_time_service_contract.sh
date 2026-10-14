@@ -13,7 +13,8 @@ trap 'rm -f "$OUTPUT"' EXIT
 if [ -d "$DEVICE_DIR" ]; then
   for f in ClockCore.h ClockCore.cpp EspNowTimeWire.h EspNowTimeWire.cpp EspNowFrame.h EspNowFrame.cpp \
            VersionCompare.h VersionCompare.cpp UpdateChannel.h \
-           JsonUtils.h JsonUtils.cpp PowerStatusJson.h PowerStatusJson.cpp OtaManager.h OtaTls.h; do
+           JsonUtils.h JsonUtils.cpp PowerStatusJson.h PowerStatusJson.cpp OtaManager.h OtaTls.h \
+           TimeWireConstants.h PacketWireConstants.h; do
     if ! cmp -s "$HUB_DIR/$f" "$DEVICE_DIR/$f"; then
       echo "shared file out of sync with NewHorizonsOS-OTA: $f" >&2
       exit 1

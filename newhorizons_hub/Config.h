@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "BoardConfig.h"
+#include "PacketWireConstants.h"
 
 namespace nhos {
 
@@ -26,30 +27,9 @@ static constexpr uint16_t kCols = NHOS_BOARD_COLS;
 static constexpr uint16_t kMaxSensors = kRows * kCols;
 static constexpr uint8_t kImuSampleFloats = 7 + (NHOS_BOARD_HAS_MAG ? 3 : 0);
 
-static constexpr uint16_t kUdpStreamPort = 13250;
-static constexpr uint16_t kDiscoveryPort = 22346;
-static constexpr uint16_t kControlPort = 22345;
-
-static constexpr uint16_t kPacketMagic = 0xA55A;
-// No kPacketVersion: the Hub relays device packets opaquely (it reads only
-// the UID at offset 4), so a version constant here could only go stale --
-// it once said 4 while devices sent v5.
-static constexpr uint8_t kPacketFlagImu = 0x01;
-static constexpr uint8_t kPacketFlagBattery = 0x02;
-static constexpr uint8_t kPacketFlagMag = 0x04;
-static constexpr uint8_t kPacketFlagRawAdc = 0x08;
-static constexpr uint8_t kPacketFlagEpochValid = 0x10;
-static constexpr uint8_t kPacketFlagHmac = 0x40;
-static constexpr uint8_t kPacketFlagHeartbeat = 0x80;
-static constexpr size_t kPacketHeaderLen = 24;
-static constexpr size_t kPacketHmacLen = 16;
-static constexpr size_t kMaxPacketBytes =
-    kPacketHeaderLen +
-    (kMaxSensors * sizeof(float)) +
-    (kMaxSensors * sizeof(float)) +  // optional raw ADC block (parallel to matrix levels)
-    (kImuSampleFloats * sizeof(float)) +
-    4 +
-    kPacketHmacLen;
+// Ports and the packet header length: PacketWireConstants.h, generated from
+// the device firmware's spec/wire.json. The Hub relays device packets
+// opaquely (it reads only the UID at offset 4), so that is all it needs.
 static constexpr uint32_t kHeartbeatIntervalMs = 5000;
 
 static constexpr uint16_t kDefaultTargetFps = 60;
