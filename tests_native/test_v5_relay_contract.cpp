@@ -9,7 +9,7 @@
 #include <cstring>
 #include <vector>
 
-#include "../newhorizons_hub/EspNowFrame.h"
+#include "EspNowFrame.h"  // nhos_core
 
 namespace {
 

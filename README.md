@@ -13,35 +13,49 @@ firmware. The Hub doesn't need `MatrixScanner`/`Calibration`/`ImuManager`/
 `DisplayManager` from the device firmware, and pulling that code (and its
 RAM use) into a no-PSRAM board is unnecessary risk.
 
-## Shared files (manually synced copies, not symlinks)
+## Shared code
 
-`Config.h`, `BoardConfig.h`, `Storage.h/.cpp`, `WifiManager.h/.cpp`,
-`LedController.h/.cpp`, `BoardPins.h/.cpp`, `EspNowFrame.h/.cpp`,
-`JsonUtils.h/.cpp`, `OtaManager.h/.cpp`, `PowerManager.h/.cpp`,
-`PowerStatusJson.h/.cpp`, `ClockCore.h/.cpp`, `EspNowTimeWire.h/.cpp`,
-`VersionCompare.h/.cpp`, `UpdateChannel.h`, `OtaTls.h` (and
-`scripts/generate_arduino_manifest.py`) started as copies of the same files
-in `NewHorizonsOS-OTA/firmware/newhorizons_os/`. Since this Hub firmware now
-lives in a separate repo from the device firmware, there is no
-build-system or git mechanism keeping them in sync at all — **if you change
-the shared protocol/board logic in `NewHorizonsOS-OTA`, re-copy the
-relevant file here too** (or vice versa), by hand. `Config.h`'s
-`kHardwareModel` is the one deliberate exception: this repo's copy hardcodes
-a `" (Hub)"` suffix so `OtaManager::parseManifest()`'s `model_mismatch`
-check can't be fooled by a manifest URL pointed at the wrong repo/product,
-even though the Hub and a device can be the exact same physical board
-(`NHOS_BOARD_NAME`). (`LedController.h`'s `LedSignal` enum also carries a
-Hub-only `UplinkDegraded` value that the device firmware's copy never uses
-— kept in sync anyway rather than forking the enum.)
+### nhos_core (one copy, built into both)
 
-`ClockCore`, `EspNowTimeWire`, `EspNowFrame`, `VersionCompare`,
-`UpdateChannel`, `JsonUtils`, `PowerStatusJson`, `OtaManager.h` and `OtaTls.h` must stay
-**byte-identical** to the device firmware's copies
-(they define the wire format, clock discipline and update-version order both
-ends rely on); `tests_native/run_time_service_contract.sh` fails if they
-drift, and `tests_native/run_version_contract.sh` checks the version order
-against `NewHorizonsOS-OTA/spec/fixtures/versions.json`, when
-`NewHorizonsOS-OTA` is checked out alongside.
+The code this Hub and the device firmware must agree on byte for byte is a
+library in the firmware repo, `NewHorizonsOS-OTA/firmware/libraries/nhos_core`:
+board definitions (`BoardConfig.h`, `BoardPins`), the wire constants
+(`PacketWireConstants.h`, `TimeWireConstants.h`, generated from
+`spec/wire.json`), `EspNowFrame`, `EspNowTimeWire`, `ClockCore`,
+`VersionCompare`, `UpdateChannel.h`, `OtaTls.h`, `JsonUtils`,
+`PowerStatusJson` and a few firmware-only headers. This Hub keeps **no copy**
+of them: every build passes `--library` pointing at a NewHorizonsOS-OTA
+checkout beside this repo (`scripts/build_release.sh`, `scripts/flash_firmware.sh`
+and CI do; set `CORE_LIB` to use another path). `tests_native/run_time_service_contract.sh`
+fails if a file here would shadow one of the library's.
+
+A release records the firmware commit it was built against in its release
+notes, and `build_release.sh` refuses a library with uncommitted changes, so
+a Hub release can be rebuilt exactly.
+
+### The Hub's own versions
+
+These started as copies of the device firmware's files but have diverged on
+purpose; they are the Hub's own now, not copies to keep in sync:
+
+- `Config.h` — Hub product constants. `kHardwareModel` / `kOtaManifestModel`
+  carry a `" (Hub)"` suffix so `OtaManager::parseManifest()`'s
+  `model_mismatch` check cannot accept a device firmware manifest, even
+  though the Hub and a device can be the same physical board.
+- `Storage` — only the NVS/SPIFFS pieces the Hub uses (no calibration, app or
+  log-rotation scopes).
+- `WifiManager` — no `DeviceConfig`, no ESP-NOW pairing fallback, no
+  reconnect-timeout fallback to the setup portal (the Hub has its own
+  `HubConfigPortal`).
+- `LedController` — the Hub's status patterns, including `UplinkDegraded`.
+- `PowerManager` — charger handling without the device's soft-off and
+  power-state machine.
+- `OtaManager.cpp` — the Hub's own update flow (its manifest track and
+  status reporting). `OtaManager.h` is still a byte-identical copy of the
+  firmware's header, checked by the contract test, because the Desktop's Hub
+  update page relies on the same `UpdateInfo` fields.
+- `scripts/generate_arduino_manifest.py` — the same manifest/channel rules as
+  the firmware's, with the Hub's track names.
 
 ## Hub-specific modules
 
@@ -52,7 +66,7 @@ against `NewHorizonsOS-OTA/spec/fixtures/versions.json`, when
   `kEspNowFragTypeControl` frames (command responses) to a dedicated
   callback so they're never mistaken for sensor data. Also answers devices'
   ESP-NOW time requests (`0xE8` TIME_REQ → `0xE9` TIME_RESP, see
-  `EspNowTimeWire.h`) from `HubClock`.
+  nhos_core's `EspNowTimeWire.h`) from `HubClock`.
 - `HubClock.h/.cpp` — the Hub's wall clock, served to paired devices. SNTP
   (every 10 min) as soon as Wi-Fi is up; if SNTP is not delivering, the
   Desktop backend over the uplink (`ping` → `pong.server_time_ms`, timed
@@ -217,7 +231,9 @@ SoftAP, which needs no Backend at all).
 ## Build
 
 ```bash
+# Needs NewHorizonsOS-OTA checked out beside this repo (nhos_core, above).
 arduino-cli compile \
+  --library ../NewHorizonsOS-OTA/firmware/libraries/nhos_core \
   --fqbn "esp32:esp32:esp32s3:FlashSize=4M,PartitionScheme=min_spiffs" \
   --build-property "compiler.cpp.extra_flags=-DNHOS_BOARD_GCU_V23D_LTS" \
   newhorizons_hub

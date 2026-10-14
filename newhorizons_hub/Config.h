@@ -20,7 +20,7 @@ static constexpr char kProtocolName[] = "NHO/Arduino/1";
 static constexpr char kHardwareModel[] = NHOS_BOARD_NAME " (Hub)";
 // The pre-rename name OTA manifests still carry (see BoardConfig.h).
 static constexpr char kOtaManifestModel[] = NHOS_BOARD_OTA_MODEL " (Hub)";
-static constexpr char kFirmwareVersion[] = "v0.9.0";
+static constexpr char kFirmwareVersion[] = "v0.10.0-beta.1";
 
 static constexpr uint16_t kRows = NHOS_BOARD_ROWS;
 static constexpr uint16_t kCols = NHOS_BOARD_COLS;
@@ -51,8 +51,10 @@ static constexpr char kDefaultApSsidPrefix[] = "NHOS";
 static constexpr char kDefaultApPassword[] = "";
 static constexpr char kSetupPortalDomain[] = "nhos.os";
 static constexpr uint16_t kSetupPortalPort = 80;
-static constexpr char kDefaultUpdateManifestUrl[] =
-    NHOS_BOARD_DEFAULT_OTA_MANIFEST_URL;
+// A leftover fallback: every caller passes the Hub's own manifest URL
+// (newhorizons_hub.ino). Points at this board's device firmware, whose
+// manifest model (no " (Hub)" suffix) the Hub refuses anyway.
+static constexpr char kDefaultUpdateManifestUrl[] = NHOS_BOARD_OTA_MANIFEST_BASE "-latest.json";
 
 enum class RunMode : uint8_t {
   Normal = 0,
