@@ -15,7 +15,7 @@ BUILD_PATH="${OUT_DIR}/compile"
 RELEASE_DIR="${ROOT}/releases/artifacts"
 MANIFEST_DIR="${ROOT}/releases"
 FQBN="${FQBN:-esp32:esp32:esp32s3:FlashSize=4M,PartitionScheme=min_spiffs}"
-VERSION="${VERSION:-v0.10.0-beta.2}"
+VERSION="${VERSION:-v0.10.0}"
 # stable (default) or beta; beta versions carry a suffix, e.g. v0.9.0-beta.1.
 CHANNEL="${CHANNEL:-stable}"
 # Must match Config.h's kOtaManifestModel (the pre-rename VD-CTL/R name)
