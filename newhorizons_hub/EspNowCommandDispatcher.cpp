@@ -346,8 +346,14 @@ void EspNowCommandDispatcher::completePending(uint8_t idx, const String& respons
   jsonExtractBool(response, "ok", ok);
   const String cmd = jsonExtractString(response, "cmd", entry.command);
   const String message = jsonExtractString(response, "message", "");
+  // "data" is an array for some commands (file_list), which an
+  // object-only extract turned into {} -- an empty listing over a Hub
+  // while the same device listed its files through a Gateway.
   String dataRaw;
-  if (!jsonExtractObject(response, "data", dataRaw)) dataRaw = "{}";
+  if (!jsonExtractObject(response, "data", dataRaw) &&
+      !jsonExtractArray(response, "data", dataRaw)) {
+    dataRaw = "{}";
+  }
   const String errorStr = jsonExtractString(response, "error", "");
 
   String result = "{";
