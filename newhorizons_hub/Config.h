@@ -47,9 +47,12 @@ static constexpr uint8_t kSafeModeBootFailures = 3;
 static constexpr size_t kDefaultLogMaxBytes = 12 * 1024;
 static constexpr size_t kExtendedLogMaxBytes = 24 * 1024;
 
-static constexpr char kDefaultApSsidPrefix[] = "NHOS";
+// Both setup portals (HubConfigPortal and WifiManager's fallback) use
+// these. They differ from the device firmware's NHOS / nhos.os on purpose:
+// a site can have both broadcasting at once.
+static constexpr char kDefaultApSsidPrefix[] = "NHHub";
 static constexpr char kDefaultApPassword[] = "";
-static constexpr char kSetupPortalDomain[] = "nhos.os";
+static constexpr char kSetupPortalDomain[] = "nhos.hub";
 static constexpr uint16_t kSetupPortalPort = 80;
 // A leftover fallback: every caller passes the Hub's own manifest URL
 // (newhorizons_hub.ino). Points at this board's device firmware, whose

@@ -184,7 +184,7 @@ void onUplinkCommand(const String& deviceUid, const String& payloadJson, void* /
   commandDispatcher.sendCommand(deviceUid, payloadJson);
 }
 
-// Clears every NVS key HubConfigPortal::handleFactoryReset() also clears --
+// Clears every NVS key HubConfigPortal::factoryReset() also clears --
 // duplicated (not shared via a helper) because the two live in separate
 // translation units and this is the entire body; see HubConfigPortal.cpp
 // for the SoftAP-reachable equivalent used when the Hub can't reach the
@@ -458,7 +458,7 @@ String buildPairedDevicesDetailJson() {
 void startUplinkIfReady() {
   // hubConfig.isConfigured() should always be true by the time Wi-Fi comes
   // up now (HubConfigPortal's single form writes Wi-Fi + Hub settings
-  // together, see HubConfigPortal::handleSave()) -- this guard just avoids
+  // together, see HubConfigPortal::commit()) -- this guard just avoids
   // registering against Production with an empty gateway_id in the
   // never-should-happen case that NVS has Wi-Fi creds but no Hub config
   // (e.g. a downgrade from an older firmware version).

@@ -45,8 +45,9 @@ purpose; they are the Hub's own now, not copies to keep in sync:
 - `Storage` — only the NVS/SPIFFS pieces the Hub uses (no calibration, app or
   log-rotation scopes).
 - `WifiManager` — no `DeviceConfig`, no ESP-NOW pairing fallback, no
-  reconnect-timeout fallback to the setup portal (the Hub has its own
-  `HubConfigPortal`).
+  runtime reconnect-timeout fallback. When the saved Wi-Fi fails at boot it
+  opens the setup page in its Wi-Fi-only variant (same `NHHub-<MAC>` AP and
+  `nhos.hub` address as `HubConfigPortal`).
 - `LedController` — the Hub's status patterns, including `UplinkDegraded`.
 - `PowerManager` — charger handling without the device's soft-off and
   power-state machine.
@@ -99,13 +100,17 @@ purpose; they are the Hub's own now, not copies to keep in sync:
   why).
 - `HubConfig.h/.cpp` — NVS-backed `gateway_id`/`target_mode`/`manual_url`/
   `auth_token`.
-- `HubConfigPortal.h/.cpp` — SoftAP + captive-portal setup form. Collects
-  Wi-Fi credentials plus the connectivity fields needed to reach *some*
-  Backend (`target_mode`/`manual_url`/`auth_token`) — `gateway_id` is
-  auto-generated (`nh-hub-XXXXXX`), not typed, since renaming is a Desktop
-  concern once the Hub is online (see "Hub control model" below). This is
-  the **only** WebServer the Hub ever runs — it does not persist into
-  normal operation.
+- `HubConfigPortal.h/.cpp` — the Hub's half of the shared SoftAP setup
+  page (`nhos_core` `SetupPortal`; the page itself is
+  `NewHorizonsOS-OTA/firmware/libraries/nhos_core/portal/setup_portal.html`,
+  in Japanese, English and Traditional Chinese). Collects Wi-Fi plus the
+  fields needed to reach *some* Backend (`target_mode`/`manual_url`/
+  `auth_token`) and tests the Wi-Fi (and a TCP connect to the Backend)
+  before saving and rebooting. `gateway_id` is auto-generated
+  (`nh-hub-XXXXXX`), not typed, since renaming is a Desktop concern once
+  the Hub is online (see "Hub control model" below). A setup page is the
+  **only** web server the Hub ever runs — none persists into normal
+  operation.
 - `newhorizons_hub.ino` — wiring. Boots straight into `HubConfigPortal` if
   Wi-Fi credentials aren't set yet (`HubConfigPortal`'s single form writes
   both Wi-Fi and Hub settings together, so this one check gates both);
@@ -196,11 +201,11 @@ In rough order of "try this first":
    and you need to force it, use the portal's own Factory Reset button
    once you're connected to its SoftAP -- this clears `wifi_ssid`/
    `wifi_pass` and the four `HubConfig` NVS fields, then reboots straight
-   back into setup. This needs zero Backend reachability, but only helps
-   if the Hub is already showing the portal (i.e. `wifi_ssid` really is
-   unset) -- if the stored Wi-Fi password is simply *wrong*, the Hub keeps
-   retrying that network and never reaches the portal on its own; use
-   option 4 in that case.
+   back into setup. This needs zero Backend reachability. If the saved
+   Wi-Fi is wrong or gone, the Hub opens the Wi-Fi-only setup page on its
+   own at boot (same `NHHub-<MAC>` AP): join it and pick a network. Note
+   that it does not leave that page by itself if the router comes back
+   later; reboot the Hub in that case.
 4. **Wi-Fi credentials are wrong (or you just need setup access and can't
    reach the Hub any other way) and there's no physical reset button** —
    the current GCU V2.3.D board has none; a future board revision adds

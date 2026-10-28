@@ -1,11 +1,10 @@
 #pragma once
 
 #include <Arduino.h>
-#include <DNSServer.h>
-#include <WebServer.h>
 #include <WiFi.h>
 
 #include "Config.h"
+#include "SetupPortal.h"
 #include "Storage.h"
 
 namespace nhos {
@@ -28,23 +27,15 @@ class WifiManager {
   bool connectStored();
   void startSetupAp();
   void stopSetupPortal();
-  void configurePortalRoutes();
   void serviceSetupPortal();
-  void handlePortalRoot();
-  void handlePortalSave();
-  void handlePortalRedirect();
-  String portalPage(const String& message, bool success) const;
-  String wifiNetworkOptionsHtml() const;
-  String htmlEscape(const String& value) const;
+  SetupPortalHooks portalHooks();
 
   Storage* storage_ = nullptr;
   bool setupActive_ = false;
   bool suspended_ = false;
   bool portalStarted_ = false;
-  bool portalRoutesConfigured_ = false;
   uint32_t lastReconnectMs_ = 0;
-  DNSServer dnsServer_;
-  WebServer portalServer_{kSetupPortalPort};
+  SetupPortal portal_;
 };
 
 }  // namespace nhos
