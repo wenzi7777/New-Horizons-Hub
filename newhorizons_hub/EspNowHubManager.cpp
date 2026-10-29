@@ -84,6 +84,7 @@ int EspNowHubManager::findOrCreateSlot(const uint8_t mac[6]) {
       return i;
     }
   }
+  if (!acceptNewDevices_) return -1;  // update required, see setAcceptNewDevices()
   for (uint8_t i = 0; i < kEspNowHubMaxDevices; ++i) {
     if (!slots_[i].used) {
       slots_[i].used = true;

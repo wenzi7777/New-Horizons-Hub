@@ -32,6 +32,7 @@
 #include "OtaManager.h"
 #include "PowerManager.h"
 #include "Storage.h"
+#include "VersionCompare.h"
 #include "WifiManager.h"
 
 namespace {
@@ -269,12 +270,79 @@ String hubManifestUrl() {
 
 // OtaManager's own status plus the channel it is following, so the Desktop
 // can show which one a Hub is on from the gateway_status heartbeat alone.
+// --- Required update (like a Gateway's required_update) --------------------
+// Once this Hub knows a newer release exists on its channel it keeps
+// serving the devices it already has, but refuses settings changes and new
+// pairings, and updates itself as soon as no device is online. It learns
+// the newest version from the Backend (hello_ack, then hub_version_check
+// every kVersionCheckIntervalMs) or from its own manifest checks.
+constexpr uint32_t kVersionCheckIntervalMs = 30UL * 60UL * 1000UL;
+// Without a Backend answer (one that predates hub_version_check), the Hub
+// reads its manifest itself -- only while idle, since the check blocks.
+constexpr uint32_t kManifestSelfCheckIntervalMs = 6UL * 60UL * 60UL * 1000UL;
+// No device online for this long before the update starts.
+constexpr uint32_t kAutoApplyIdleMs = 60000;
+// After a failed automatic update, before trying again.
+constexpr uint32_t kAutoApplyRetryMs = 30UL * 60UL * 1000UL;
+// New pairings stay open this long after boot even when an update is
+// required: the roster is RAM-only, so the devices this Hub was already
+// serving re-pair (HELLO every 6 s) after a restart that did not update.
+constexpr uint32_t kNewDeviceLockGraceMs = 60000;
+
+String latestHubVersion;
+bool requiredUpdate = false;
+uint32_t lastVersionCheckMs = 0;
+bool versionCheckSent = false;
+uint32_t lastBackendVersionMs = 0;
+bool backendVersionKnown = false;
+uint32_t lastManifestSelfCheckMs = 0;
+bool manifestSelfChecked = false;
+uint32_t idleSinceMs = 0;
+bool idleTracking = false;
+uint32_t autoApplyBlockedUntilMs = 0;
+bool autoApplyBlocked = false;
+
+void setLatestHubVersion(const String& version) {
+  latestHubVersion = version;
+  requiredUpdate = !version.isEmpty() &&
+                   nhos::compareVersions(version.c_str(), nhos::kFirmwareVersion) > 0;
+}
+
+void onUplinkLatestVersion(const String& version, void* /*userData*/) {
+  backendVersionKnown = true;
+  lastBackendVersionMs = millis();
+  setLatestHubVersion(version);
+  Serial.printf("[hub] latest_hub_version=%s required_update=%d\n", version.c_str(),
+                requiredUpdate ? 1 : 0);
+}
+
+bool anyDeviceLive() {
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < nhos::EspNowHubManager::maxDevices(); ++i) {
+    const nhos::EspNowHubManager::PairedDeviceInfo info = hubManager.slotInfo(i);
+    if (info.used && now - info.lastSeenMs <= nhos::kEspNowHubDeviceLiveMs) return true;
+  }
+  return false;
+}
+
+// "waiting_for_idle", "retry_later" or "" (no update required).
+const char* autoApplyState() {
+  if (!requiredUpdate) return "";
+  return autoApplyBlocked ? "retry_later" : "waiting_for_idle";
+}
+
 String hubUpdateJson(void* /*userData*/) {
   const String status = ota.lastStatusJson();
   String out = "{\"channel\":\"";
   out += hubConfig.data().updateChannel;
   out += "\",\"resolved_manifest_url\":\"";
   out += hubManifestUrl();
+  out += "\",\"required_update\":";
+  out += requiredUpdate ? "true" : "false";
+  out += ",\"latest_hub_version\":\"";
+  out += latestHubVersion;
+  out += "\",\"auto_apply\":\"";
+  out += autoApplyState();
   out += "\"";
   if (status.length() > 2) {
     out += ",";
@@ -312,6 +380,53 @@ void serviceRequestedUpdate() {
   leds.service(millis());
 }
 
+// Call every loop() tick: keeps the latest version fresh, gates new
+// pairings, and starts the update once the Hub has been idle long enough.
+void serviceRequiredUpdate() {
+  const uint32_t now = millis();
+
+  if (uplink.isConnected() &&
+      (!versionCheckSent || now - lastVersionCheckMs >= kVersionCheckIntervalMs)) {
+    if (uplink.requestLatestVersion()) {
+      versionCheckSent = true;
+      lastVersionCheckMs = now;
+    }
+  }
+
+  hubManager.setAcceptNewDevices(!requiredUpdate || now - bootMs < kNewDeviceLockGraceMs);
+
+  if (anyDeviceLive() || otaRelay.sessionActive() || pendingApplyUpdate) {
+    idleTracking = false;
+    return;
+  }
+  if (!idleTracking) {
+    idleTracking = true;
+    idleSinceMs = now;
+  }
+  if (now - idleSinceMs < kAutoApplyIdleMs) return;
+
+  // Fallback for a Backend that never answers with the latest version.
+  const bool backendFresh = backendVersionKnown && now - lastBackendVersionMs < kManifestSelfCheckIntervalMs;
+  if (!requiredUpdate && !backendFresh && wifi.isConnected() &&
+      (!manifestSelfChecked || now - lastManifestSelfCheckMs >= kManifestSelfCheckIntervalMs)) {
+    manifestSelfChecked = true;
+    lastManifestSelfCheckMs = now;
+    const nhos::UpdateInfo info = ota.checkUpdate(hubManifestUrl());
+    if (info.error.isEmpty() && info.available) setLatestHubVersion(info.version);
+    return;
+  }
+
+  if (!requiredUpdate) return;
+  if (autoApplyBlocked && static_cast<int32_t>(now - autoApplyBlockedUntilMs) < 0) return;
+  // Set before trying: a failed apply returns here, and must wait.
+  autoApplyBlocked = true;
+  autoApplyBlockedUntilMs = now + kAutoApplyRetryMs;
+  Serial.printf("[hub] auto_apply_update idle_ms=%lu latest=%s\n",
+                static_cast<unsigned long>(now - idleSinceMs), latestHubVersion.c_str());
+  pendingApplyUpdate = true;
+  pendingApplyUpdateAtMs = now - 500;  // no reply to wait for
+}
+
 void handleGatewayCommand(const String& requestId, const String& payloadJson, void* /*userData*/) {
   String command;
   nhos::jsonExtractString(payloadJson, "command", command);
@@ -325,6 +440,10 @@ void handleGatewayCommand(const String& requestId, const String& payloadJson, vo
   }
 
   if (command == "set_config") {
+    if (requiredUpdate) {
+      uplink.sendGatewayCommandResult(requestId, false, "update_required", hubUpdateResultFields());
+      return;
+    }
     String gatewayId;
     String targetMode;
     String manualUrl;
@@ -346,6 +465,7 @@ void handleGatewayCommand(const String& requestId, const String& payloadJson, vo
 
   if (command == "check_update") {
     const nhos::UpdateInfo info = ota.checkUpdate(hubManifestUrl());
+    if (info.error.isEmpty()) setLatestHubVersion(info.available ? info.version : String());
     const char* message = !info.error.isEmpty() ? "update_check_failed"
                           : info.available      ? "update_available"
                                                 : "up_to_date";
@@ -362,7 +482,13 @@ void handleGatewayCommand(const String& requestId, const String& payloadJson, vo
     }
     // No reboot: the next check_update (or boot) reads the new channel.
     // Leaving beta never downgrades -- a newer beta stays until stable
-    // overtakes it (VersionCompare.h).
+    // overtakes it (VersionCompare.h). What the old channel said is
+    // dropped (a beta "required update" must not survive a switch back to
+    // stable) and the new channel's newest version is asked for at once.
+    setLatestHubVersion(String());
+    autoApplyBlocked = false;
+    uplink.setUpdateChannel(hubConfig.data().updateChannel);
+    versionCheckSent = false;
     uplink.sendGatewayCommandResult(requestId, true, "update_channel_set", hubUpdateResultFields());
     return;
   }
@@ -467,6 +593,7 @@ void startUplinkIfReady() {
   if (wifi.isConnected()) hubClock.beginSntp();
   if (uplinkStarted || !wifi.isConnected() || !hubConfig.isConfigured()) return;
   const nhos::HubConfigData& cfg = hubConfig.data();
+  uplink.setUpdateChannel(cfg.updateChannel);
   uplink.begin(cfg.targetMode, cfg.manualUrl, cfg.gatewayId, cfg.authToken);
   uplinkStarted = true;
 }
@@ -634,6 +761,7 @@ void setup() {
   uplink.onPong(onUplinkPong, nullptr);
   uplink.setClockJsonSource(hubClockJson, nullptr);
   uplink.setUpdateJsonSource(hubUpdateJson, nullptr);
+  uplink.onLatestVersion(onUplinkLatestVersion, nullptr);
   hubClock.setPingSender(hubClockSendPing, nullptr);
   hubManager.setTimeProvider(hubTimeProvider, nullptr);
 
@@ -676,6 +804,7 @@ void loop() {
   uplink.service();
   uplink.sendGatewayStatus(hubManager.registeredCount(), buildPairedDevicesJson(),
                             buildPairedDevicesDetailJson());
+  serviceRequiredUpdate();
   serviceRequestedUpdate();
   power.service(millis());
   updateRuntimeLed();

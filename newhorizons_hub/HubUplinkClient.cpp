@@ -187,6 +187,7 @@ void HubUplinkClient::handleWsEvent(WStype_t type, uint8_t* payload, size_t leng
       jsonStringField(hello, "gateway_id", gatewayId_, helloFirst);
       jsonStringField(hello, "client_type", "hub", helloFirst);
       jsonStringField(hello, "version", kFirmwareVersion, helloFirst);
+      jsonStringField(hello, "update_channel", updateChannel_, helloFirst);
       hello += "}";
       webSocket_.sendTXT(hello);
       helloSent_ = true;
@@ -202,6 +203,15 @@ void HubUplinkClient::handleWsEvent(WStype_t type, uint8_t* payload, size_t leng
       const String message(reinterpret_cast<const char*>(payload), length);
       String msgType;
       if (!jsonExtractString(message, "type", msgType)) break;
+
+      if ((msgType == "gateway_hello_ack" || msgType == "hub_version") &&
+          latestVersionCallback_ != nullptr) {
+        String latest;
+        if (jsonExtractString(message, "latest_hub_version", latest) && !latest.isEmpty()) {
+          latestVersionCallback_(latest, latestVersionUserData_);
+        }
+        break;
+      }
 
       if (msgType == "command" && commandCallback_ != nullptr) {
         // Mirrors gateway_ws.py's outbound command shape:
@@ -270,6 +280,21 @@ void HubUplinkClient::setClockJsonSource(HubClockJsonFn fn, void* userData) {
 void HubUplinkClient::setUpdateJsonSource(HubClockJsonFn fn, void* userData) {
   updateJsonFn_ = fn;
   updateJsonUserData_ = userData;
+}
+
+void HubUplinkClient::onLatestVersion(HubLatestVersionCallback callback, void* userData) {
+  latestVersionCallback_ = callback;
+  latestVersionUserData_ = userData;
+}
+
+bool HubUplinkClient::requestLatestVersion() {
+  if (!connected_ || !helloSent_) return false;
+  String request = "{";
+  bool first = true;
+  jsonStringField(request, "type", "hub_version_check", first);
+  jsonStringField(request, "update_channel", updateChannel_, first);
+  request += "}";
+  return webSocket_.sendTXT(request);
 }
 
 void HubUplinkClient::onCommand(HubCommandCallback callback, void* userData) {

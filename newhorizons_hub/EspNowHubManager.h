@@ -142,6 +142,12 @@ class EspNowHubManager {
 
   uint8_t registeredCount() const;
 
+  // While false, a HELLO from a MAC not already in the roster is ignored
+  // (no slot, no PAIRED); devices already in it keep being served. Set by
+  // newhorizons_hub.ino while this Hub is behind the newest release -- the
+  // Hub counterpart of a Gateway refusing to take on new devices then.
+  void setAcceptNewDevices(bool accept) { acceptNewDevices_ = accept; }
+
   // Step 4 (reverse command channel): looks up a paired device's MAC by
   // its device_uid, learned by peeking at byte 4-9 of the first
   // reassembled NHO/Arduino/1 frame from each device (that header layout
@@ -259,6 +265,8 @@ class EspNowHubManager {
   // is drained, it overwrites the buffer -- sensor data is lossy by
   // design (same philosophy as MatrixScanner's drop-oldest queue and
   // EspNowReassembler's own "new frame abandons old" rule).
+  // Read from the ESP-NOW recv callback, written from loop().
+  volatile bool acceptNewDevices_ = true;
   bool frameReady_ = false;
   uint8_t frameReadyDeviceIdx_ = 0;
   uint8_t frameReadyMac_[6] = {0};

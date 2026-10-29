@@ -50,6 +50,9 @@ using HubGatewayCommandCallback = void (*)(const String& requestId,
 // Backend `pong` carrying server_time_ms; `rxMonoUs` is esp_timer time on
 // receipt (HubClock's backend time source).
 using HubPongCallback = void (*)(int64_t serverTimeMs, int64_t rxMonoUs, void* userData);
+// The newest Hub release on this Hub's channel, as the Backend reported it
+// (`latest_hub_version` in gateway_hello_ack / hub_version).
+using HubLatestVersionCallback = void (*)(const String& version, void* userData);
 // Builds the `clock` block of gateway_status; only called when one is sent.
 using HubClockJsonFn = String (*)(void* userData);
 
@@ -146,6 +149,16 @@ class HubUplinkClient {
   // The `update` block of gateway_status (OtaManager::lastStatusJson()).
   void setUpdateJsonSource(HubClockJsonFn fn, void* userData);
 
+  // Sent in hello and hub_version_check, so the Backend answers with the
+  // newest release on this channel. Set before begin().
+  void setUpdateChannel(const String& channel) { updateChannel_ = channel; }
+  void onLatestVersion(HubLatestVersionCallback callback, void* userData);
+  // {"type":"hub_version_check"}: the Backend answers with hub_version.
+  // hello_ack already carries it; this is for a Hub that stays connected
+  // across a release. False if not connected (or a Backend that predates
+  // it simply never answers).
+  bool requestLatestVersion();
+
  private:
   void connectNow();
   void handleWsEvent(WStype_t type, uint8_t* payload, size_t length);
@@ -189,6 +202,9 @@ class HubUplinkClient {
   void* clockJsonUserData_ = nullptr;
   HubClockJsonFn updateJsonFn_ = nullptr;
   void* updateJsonUserData_ = nullptr;
+  String updateChannel_ = "stable";
+  HubLatestVersionCallback latestVersionCallback_ = nullptr;
+  void* latestVersionUserData_ = nullptr;
 
   static HubUplinkClient* instance_;
 };
