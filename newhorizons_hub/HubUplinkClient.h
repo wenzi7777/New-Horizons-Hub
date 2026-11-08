@@ -91,12 +91,9 @@ class HubUplinkClient {
   // UI silently had nowhere to route to until this was added.
   //
   // Every call also piggybacks this Hub's actual current WiFi/ESP-NOW
-  // channel (read via esp_wifi_get_channel()) into the same payload --
-  // see hub_channel_watch.py's header comment for why: the backend uses
-  // this purely to *detect* (never assign) channel collisions between
-  // Hubs an admin has grouped into the same "environment", since
-  // esp_wifi_set_channel() was found to be a no-op once a Hub's WiFi STA
-  // is associated to a real access point.
+  // channel (read via esp_wifi_get_channel()) into the same payload, shown
+  // in the Desktop's Hub card. The channel is the AP's: esp_wifi_set_channel()
+  // is a no-op once the STA is associated, so nothing tries to assign one.
   //
   // `pairedDevicesDetailJsonArray` is a second, richer array (each item:
   // {"device_uid":...,"mac":...,"status":"paired"|"pending"}) surfaced to

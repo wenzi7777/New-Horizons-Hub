@@ -398,10 +398,8 @@ void HubUplinkClient::service() {
     jsonRawField(state, "devices", pendingDevicesJsonArray_, stateFirst);
     state += "}";
 
-    // Piggyback this Hub's actual current channel on the same heartbeat --
-    // see hub_channel_watch.py's header comment. No separate request/
-    // response round trip: the backend only uses this to detect (never
-    // assign) collisions between same-"environment" Hubs.
+    // Piggyback this Hub's actual current channel (its AP's) on the same
+    // heartbeat, for the Desktop's Hub card.
     uint8_t currentChannel = 0;
     wifi_second_chan_t secondChannel = WIFI_SECOND_CHAN_NONE;
     esp_wifi_get_channel(&currentChannel, &secondChannel);
