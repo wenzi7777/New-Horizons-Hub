@@ -4,6 +4,7 @@
 #include "JsonUtils.h"
 
 #include <esp_mac.h>
+#include <esp_wifi.h>
 
 namespace nhos {
 
@@ -137,12 +138,24 @@ bool WifiManager::connectStored() {
   const String ssid = storage_->getString("wifi_ssid", "");
   const String password = storage_->getString("wifi_pass", "");
   WiFi.mode(WIFI_STA);
+  // Paired devices talk ESP-NOW in HT20 on one channel. Left at the default
+  // (HT40 allowed), this STA follows a 20/40 MHz AP into HT40 and then stops
+  // hearing them -- fine behind the lab's 20 MHz AP, deaf behind a typical
+  // auto-20/40 router. The uplink needs nowhere near HT40's throughput.
+  const esp_err_t bwErr = esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
+  if (bwErr != ESP_OK) {
+    Serial.printf("[hub] esp_wifi_set_bandwidth(HT20) -> %d\n", bwErr);
+  }
   Serial.print(F("wifi_sta_connect_start ssid="));
   Serial.println(ssid);
   WiFi.begin(ssid.c_str(), password.c_str());
   const uint32_t start = millis();
   while (millis() - start < 8000) {
     if (isConnected()) {
+      uint8_t primary = 0;
+      wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+      esp_wifi_get_channel(&primary, &second);
+      Serial.printf("wifi_sta_channel primary=%u second=%d\n", primary, static_cast<int>(second));
       return true;
     }
     delay(50);
